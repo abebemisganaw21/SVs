@@ -1,0 +1,282 @@
+#### Phenotypic Analysis
+library(tidyverse)
+library(ggthemes)
+library(multcompView)
+library(dplyr)
+library(ggplot2)
+library(readxl)
+library(RColorBrewer)
+library(patchwork)  # For combining plots if needed
+
+##### Import data 
+setwd("path")
+
+Sugar <- read_excel("filename.xlsx")
+view(Sugar)
+head(Sugar)
+
+### Create consistent color mapping for all accessions
+# First, get all unique accessions from your data
+all_accessions <- sort(unique(Sugar$TRT))  # Sort to ensure consistent ordering
+n_accessions <- length(all_accessions)
+
+# Generate distinct colors for 14 accessions
+# Using a combination of palettes to get enough distinct colors
+if(n_accessions <= 12) {
+  accession_colors <- brewer.pal(n_accessions, "Set3")
+} else {
+  # For 14 accessions, combine two palettes
+  # Using Set3 (12 colors) + Paired (12 colors) for more distinct options
+  accession_colors <- c(brewer.pal(12, "Set3"), 
+                        brewer.pal(12, "Paired")[1:(n_accessions-12)])
+}
+
+# Name the colors with accession IDs for easy reference
+names(accession_colors) <- all_accessions
+
+# Save the color mapping for future use
+color_mapping <- data.frame(
+  Accession = names(accession_colors),
+  Color = accession_colors,
+  Color_Hex = accession_colors
+)
+
+print("Consistent color assignments for all accessions:")
+print(color_mapping)
+
+# Optional: Save color mapping to a file for reference
+write.csv(color_mapping, "accession_color_mapping.csv", row.names = FALSE)
+
+### Function to create plots with consistent colors and custom y-axis labels
+create_phenotype_plot <- function(data, trait_name, trait_column, color_mapping, y_label) {
+  
+  ### Analysis of variance
+  data$TRT <- as.factor(data$TRT)
+  data$Rep <- as.factor(data$Rep)
+  
+  # Handle potential missing values
+  data_complete <- data[!is.na(data[[trait_column]]), ]
+  
+  formula <- as.formula(paste(trait_column, "~ TRT + Rep"))
+  wako <- aov(formula, data = data_complete)
+  
+  ### Tukey's Test
+  tukey <- TukeyHSD(wako)
+  
+  #### Compact Letter display
+  cld <- multcompLetters4(wako, tukey)
+  
+  ## Table with factor and mean values
+  waje <- group_by(data_complete, TRT) %>%
+    summarise(w = mean(.data[[trait_column]], na.rm = TRUE), 
+              sd = sd(.data[[trait_column]], na.rm = TRUE)) %>%
+    arrange(desc(w))
+  
+  ### Add compact letters
+  cld_df <- as.data.frame.list(cld$TRT)
+  waje$cld <- cld_df$Letters
+  
+  # Ensure all accessions are present (in case some are missing in this trait)
+  # Create a complete dataframe with all accessions
+  all_accessions_df <- data.frame(TRT = names(color_mapping))
+  waje_complete <- left_join(all_accessions_df, waje, by = "TRT") %>%
+    mutate(
+      w = ifelse(is.na(w), 0, w),
+      sd = ifelse(is.na(sd), 0, sd),
+      cld = ifelse(is.na(cld), "", cld)
+    )
+  
+  # Order accessions by mean value for plotting
+  waje_complete$TRT <- factor(waje_complete$TRT, 
+                              levels = waje_complete$TRT[order(waje_complete$w, decreasing = TRUE)])
+  
+  ### Create plot with consistent colors
+  p <- ggplot(waje_complete, aes(x = TRT, y = w, fill = TRT)) +
+    geom_col(show.legend = FALSE, width = 0.7, color = "black", size = 0.3) +
+    geom_errorbar(aes(ymin = w - sd, ymax = w + sd), 
+                  width = 0.2, size = 0.4, color = "black") +
+    scale_fill_manual(values = color_mapping) +  # Use consistent color mapping
+    labs(
+      x = "Accession", 
+      y = y_label) +  # Use custom y-axis label
+    geom_text(
+      aes(label = cld, y = w + sd + sd * 0.15), 
+      vjust = 0, 
+      size = 3.5,
+      fontface = "bold",
+      angle = 0
+    ) +
+    scale_y_continuous(
+      limits = c(0, max(waje_complete$w + waje_complete$sd, na.rm = TRUE) * 1.15),
+      expand = expansion(mult = c(0, 0.05))
+    ) +
+    theme_classic() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 11, 
+                                 color = "black", face = "plain",
+                                 margin = margin(t = 5, r = 0, b = 0, l = 0)),
+      axis.text.y = element_text(size = 10, color = "black", face = "plain"),
+      axis.title.x = element_text(size = 12, face = "bold", margin = margin(t = 10)),
+      axis.title.y = element_text(size = 12, face = "bold", margin = margin(r = 10)),
+      axis.line = element_line(color = "black", size = 0.5),
+      axis.ticks = element_line(color = "black", size = 0.5),
+      axis.ticks.length = unit(0.15, "cm"),
+      panel.grid.major.y = element_line(color = "gray85", size = 0.3),
+      panel.grid.minor.y = element_blank(),
+      plot.margin = margin(10, 10, 15, 10, "pt"),
+      plot.background = element_rect(fill = "white", color = NA),
+      panel.background = element_rect(fill = "white"),
+      text = element_text(family = "sans")
+    )
+  
+  return(p)
+}
+
+### Define all your fruit traits with custom y-axis labels
+traits <- list(
+  Fruit_cheek_diameter = list(column = "W", y_label = "Fruit cheek diameter (mm)"),
+  Fruit_suture_diameter = list(column = "D", y_label = "Fruit suture diameter (mm)"),
+  Fruit_size = list(column = "FS", y_label = "Fruit size (mm)"),
+  Fruit_vertical_diameter = list(column = "H", y_label = "Fruit vertical diameter (mm)"),
+  Fruit_longitudinal_shape_index = list(column = "FLSI", y_label = "Fruit longitudinal shape index"),
+  Fruit_transverse_shape_index = list(column = "FTSI", y_label = "Fruit transverse shape index"),
+  Single_fruit_weight = list(column = "SFW", y_label = "Single Fruit Weight (g)"),
+  Firmness = list(column = "F", y_label = "Firmness (N)")
+)
+
+# Check which traits exist in your data
+existing_traits <- list()
+for(trait_name in names(traits)) {
+  trait_col <- traits[[trait_name]]$column
+  if(trait_col %in% colnames(Sugar)) {
+    existing_traits[[trait_name]] <- traits[[trait_name]]
+    print(paste("Found trait:", trait_name, "-> column:", trait_col))
+  } else {
+    print(paste("WARNING: Trait", trait_name, "column", trait_col, "not found in data!"))
+  }
+}
+
+### Create plots for all traits using the same color mapping
+all_plots <- list()
+
+for(trait_name in names(existing_traits)) {
+  trait_info <- existing_traits[[trait_name]]
+  trait_col <- trait_info$column
+  y_label <- trait_info$y_label
+  
+  print(paste("Creating plot for:", trait_name, "with y-label:", y_label))
+  
+  # Create plot
+  p <- create_phenotype_plot(Sugar, trait_name, trait_col, accession_colors, y_label)
+  all_plots[[trait_name]] <- p
+  
+  # Save individual plot
+  filename_png <- paste0(gsub(" ", "_", trait_name), "_consistent_colors.png")
+  filename_pdf <- paste0(gsub(" ", "_", trait_name), "_consistent_colors.pdf")
+  
+  ggsave(filename_png, 
+         plot = p,
+         width = 8, 
+         height = 5,
+         dpi = 600,
+         bg = "white",
+         units = "in",
+         device = "png",
+         type = "cairo")
+  
+  ggsave(filename_pdf, 
+         plot = p,
+         width = 8, 
+         height = 5,
+         bg = "white",
+         units = "in",
+         device = "pdf",
+         dpi = 600)
+  
+  print(paste("Saved:", filename_png))
+}
+
+### Optional: Create a combined figure with multiple traits
+# If you want to combine multiple plots into one figure
+if(length(all_plots) >= 4) {
+  # Combine first 4 traits
+  combined_plot <- all_plots[[1]] + all_plots[[2]] + all_plots[[3]] + all_plots[[4]] +
+    plot_annotation(title = "Fruit Traits of Accessions",
+                    theme = theme(plot.title = element_text(size = 16, face = "bold", hjust = 0.5)))
+  
+  ggsave("Combined_fruit_traits_1-4.png", 
+         plot = combined_plot,
+         width = 16, 
+         height = 10,
+         dpi = 600,
+         bg = "white",
+         units = "in")
+  
+  # Combine traits 5-8 if they exist
+  if(length(all_plots) >= 8) {
+    combined_plot2 <- all_plots[[5]] + all_plots[[6]] + all_plots[[7]] + all_plots[[8]] +
+      plot_annotation(title = "Fruit Traits of Accessions (continued)",
+                      theme = theme(plot.title = element_text(size = 16, face = "bold", hjust = 0.5)))
+    
+    ggsave("Combined_fruit_traits_5-8.png", 
+           plot = combined_plot2,
+           width = 16, 
+           height = 10,
+           dpi = 600,
+           bg = "white",
+           units = "in")
+  }
+}
+
+### Create a summary table with mean values for all traits
+summary_table <- data.frame(Accession = all_accessions)
+
+for(trait_name in names(existing_traits)) {
+  trait_info <- existing_traits[[trait_name]]
+  trait_col <- trait_info$column
+  
+  trait_summary <- Sugar %>%
+    group_by(TRT) %>%
+    summarise(mean_value = mean(.data[[trait_col]], na.rm = TRUE)) %>%
+    rename(!!trait_name := mean_value)
+  
+  summary_table <- left_join(summary_table, trait_summary, by = c("Accession" = "TRT"))
+}
+
+# Round numeric columns to 2 decimal places
+summary_table <- summary_table %>%
+  mutate(across(where(is.numeric), ~round(., 2)))
+
+# Save summary table
+write.csv(summary_table, "fruit_traits_summary_table.csv", row.names = FALSE)
+print("Summary table saved as 'fruit_traits_summary_table.csv'")
+
+### Display color assignments
+color_assignments <- data.frame(
+  Accession = names(accession_colors),
+  Color = accession_colors
+)
+print("Color assignments for each accession (consistent across all traits):")
+print(color_assignments)
+
+# Create a visual color key
+color_key <- ggplot(color_assignments, aes(x = 1, y = reorder(Accession, desc(Accession)), fill = Accession)) +
+  geom_tile(color = "white", size = 0.5) +
+  scale_fill_manual(values = accession_colors) +
+  labs(title = "Accession Color Key", y = "Accession") +
+  theme_minimal() +
+  theme(legend.position = "none",
+        axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        panel.grid = element_blank())
+
+ggsave("accession_color_key.png", 
+       plot = color_key,
+       width = 3, 
+       height = 6,
+       dpi = 300,
+       bg = "white",
+       units = "in")
+
+print("Analysis complete! Check your working directory for output files.")
