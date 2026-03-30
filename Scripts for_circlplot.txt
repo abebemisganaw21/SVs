@@ -1,0 +1,154 @@
+#### Authors:  Abebe Misganaw Gedamu 
+### Genome Wide SVs Distribution Analysis 
+
+library(dplyr)
+library(circlize)
+
+# 1. Clear any existing plot
+circos.clear()
+
+# 2. Read and prepare data
+sv_data <- read.table("SVs_data.tsv", header = TRUE)
+
+# 3. Verify and clean data
+sv_data$chr <- factor(sv_data$chr)
+if (any(is.na(sv_data))) sv_data <- na.omit(sv_data)
+
+# 4. Calculate chromosome lengths
+chrom_lengths <- sv_data %>% 
+  group_by(chr) %>% 
+  summarize(max_end = max(end))
+
+# 5. Set circos parameters (reduced track height)
+circos.par(
+  track.height = 0.1,  # Reduced from 0.15
+  gap.degree = 3,
+  start.degree = 90,
+  cell.padding = c(0, 0, 0, 0)
+)
+
+# 6. Initialize with chromosome lengths
+circos.initialize(
+  factors = chrom_lengths$chr,
+  xlim = cbind(rep(0, nrow(chrom_lengths)), chrom_lengths$max_end)
+)
+
+# 7. Chromosome labels (outermost track)
+circos.track(
+  ylim = c(0, 1),
+  bg.border = NA,
+  track.height = 0.06,
+  panel.fun = function(x, y) {
+    circos.text(
+      CELL_META$xcenter,
+      CELL_META$ylim[1] + 0.1,
+      gsub("^chr", "", CELL_META$sector.index),
+      facing = "downward",
+      cex = 0.8,
+      niceFacing = TRUE
+    )
+  }
+)
+
+# 8. Create tracks with circular bars
+sv_types <- c("DEL", "INS", "DUP", "INV")
+colors <- c("#E41A1C", "#377EB8", "#4DAF4A", "#984EA3")
+hotspot_color <- "#FFD166"
+
+# Function to create circular bars
+create_sv_track <- function(sv_type, color) {
+  circos.track(
+    factors = sv_data$chr,
+    ylim = c(0, 1),
+    panel.fun = function(x, y) {
+      chr <- CELL_META$sector.index
+      sv_data_chr <- sv_data[sv_data$chr == chr, ]
+      scaled_values <- scales::rescale(sv_data_chr[[sv_type]], to = c(0, 1))
+      
+      # Draw circular bars
+      for(i in 1:nrow(sv_data_chr)) {
+        circos.rect(
+          xleft = sv_data_chr$start[i],
+          ybottom = 0,
+          xright = sv_data_chr$end[i],
+          ytop = scaled_values[i],
+          col = color,
+          border = NA
+        )
+      }
+    },
+    bg.border = NA,
+    track.height = 0.12  # Slightly taller for bars
+  )
+}
+
+# Create tracks (2-5)
+create_sv_track("DEL", colors[1])
+create_sv_track("INS", colors[2])
+create_sv_track("DUP", colors[3])
+create_sv_track("INV", colors[4])
+
+# 9. Hotspots track (6)
+circos.track(
+  factors = sv_data$chr,
+  ylim = c(0, 1),
+  panel.fun = function(x, y) {
+    chr <- CELL_META$sector.index
+    idx <- which(sv_data$chr == chr & sv_data$hotspot == 1)
+    if (length(idx) > 0) {
+      circos.points(
+        sv_data$start[idx], rep(0.5, length(idx)),
+        pch = 16,
+        col = hotspot_color,
+        cex = 0.8
+      )
+    }
+  },
+  bg.border = NA,
+  track.height = 0.08
+)
+
+# 10. Add legend
+legend("bottomright",
+       legend = c("DEL", "INS",
+                  "DUP", "INV",
+                  "Hotspots"),
+       fill = c(colors, hotspot_color),
+       border = NA,
+       bty = "n",
+       cex = 0.8)
+
+
+
+
+# Save as high-quality JPEG
+jpeg("SV_plot_publication.jpg", 
+     width = 8,          # Width in inches (standard for journals)
+     height = 10,         # Height in inches (adjust for circular plot)
+     units = "in",        # Units in inches (better for publications)
+     res = 600,           # High resolution (600 DPI for publications)
+     quality = 100,       # Maximum quality (no compression artifacts)
+     type = "cairo")      # Anti-aliased rendering (smoother text/lines)
+
+# Recreate the plot inside the JPEG device
+circos.clear()  # Clear any existing plot
+
+# --- REPEAT ALL YOUR PLOTTING CODE HERE ---
+# (Steps 1-10 from your original code)
+
+# Close the JPEG device
+dev.off()
+
+
+###11. Save the plot as a high-quality TIFF
+tiff("SV_plot.tiff", width = 17.35, height = 23.35, units = "cm", res = 300, compression = "lzw")
+
+jpeg("SV_plotok.jpg", 
+     width = 17.35, 
+     height = 23.35, 
+     units = "cm", 
+     res = 300, 
+     quality = 100)
+
+# 11. Clear circos
+circos.clear()
