@@ -11,7 +11,7 @@ library(patchwork)  # For combining plots if needed
 ##### Import data 
 setwd("path")
 
-Sugar <- read_excel("filename.xlsx")
+Sugar <- read_excel("abe.xlsx")
 view(Sugar)
 head(Sugar)
 
