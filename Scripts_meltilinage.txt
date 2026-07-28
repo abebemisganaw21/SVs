@@ -1,915 +1,1260 @@
-# ============================================================================
-
+# =============================================================================
+# Structural-variant analysis across the G0-G5 peach pedigree
 # Author: Abebe Misganaw Gedamu
-####SV Analysis Pipeline
-# Purpose: Comprehensive analysis of phased structural variants across 5 generation
-# ============================================================================
-# 1. LOAD LIBRARIES AND SETUP
-# ============================================================================
+# Pedigree-generation definition:
+#   G0: KHRLG and BT
+#   G1: SU
+#   G2: PDYPT and BJ25
+#   G3: Z1_3
+#   G4: ZYP7, ZYP9 and MYQL
+#   G5: ZYP27
+#
+#
+# Required input:
+#   FullGenome_Lineage_Deconvolution_data.tsv
+#
+# Required columns:
+#   CHR, POS, TYPE, LEN, ORIGIN,
+#   KHRLG, BT, SU, PDYPT, BJ25, Z1_3, ZYP7, ZYP9, MYQL, ZYP27
+#
+# Genotypes may be represented as:
+#   0/0, 0/1, 1/0, 1/1, 0|0, 0|1, 1|0, 1|1, ./., .|.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 1. Packages and reproducibility
+# -----------------------------------------------------------------------------
+
+required_packages <- c(
+  "tidyverse",
+  "RColorBrewer",
+  "ggridges",
+  "viridis",
+  "gridExtra"
+)
+
+missing_packages <- required_packages[
+  !vapply(required_packages, requireNamespace, logical(1), quietly = TRUE)
+]
+
+if (length(missing_packages) > 0) {
+  stop(
+    "Install the following packages before running the script: ",
+    paste(missing_packages, collapse = ", ")
+  )
+}
 
 library(tidyverse)
-library(ggplot2)
-library(gridExtra)
-library(grid)
 library(RColorBrewer)
-library(scales)
-library(ggpubr)
 library(ggridges)
-library(ggrepel)
-library(cowplot)
 library(viridis)
-library(circlize)
-library(patchwork)
+library(gridExtra)
 
-# Set seed for reproducibility
 set.seed(42)
 
-# Create output directory
-dir.create("SV_Figures", showWarnings = FALSE)
-dir.create("SV_Tables", showWarnings = FALSE)
+input_file <- "FullGenome_Lineage_Deconvolution_data.tsv"
+figure_dir <- "SV_Figures"
+table_dir <- "SV_Tables"
 
-# Set global theme for publication
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(table_dir, recursive = TRUE, showWarnings = FALSE)
+
 theme_publication <- function() {
-  theme_classic() +
+  theme_classic(base_family = "sans", base_size = 10) +
     theme(
-      text = element_text(family = "Arial", size = 10),
-      plot.title = element_text(size = 14, face = "bold", hjust = 0.5, margin = margin(b = 10)),
-      plot.subtitle = element_text(size = 10, hjust = 0.5, color = "gray50"),
-      axis.title = element_text(size = 12, face = "bold"),
-      axis.text = element_text(size = 10, color = "black"),
-      axis.line = element_line(linewidth = 0.5),
-      legend.title = element_text(size = 10, face = "bold"),
-      legend.text = element_text(size = 9),
+      plot.title = element_text(
+        size = 14,
+        face = "plain",
+        hjust = 0,
+        margin = margin(b = 6)
+      ),
+      plot.subtitle = element_text(
+        size = 10,
+        face = "plain",
+        hjust = 0,
+        color = "gray30",
+        margin = margin(b = 8)
+      ),
+      axis.title = element_text(size = 11, face = "plain"),
+      axis.text = element_text(size = 9, color = "black", face = "plain"),
+      axis.line = element_line(linewidth = 0.6, color = "black"),
+      axis.ticks = element_line(linewidth = 0.5, color = "black"),
+      legend.title = element_text(size = 9, face = "plain"),
+      legend.text = element_text(size = 8, face = "plain"),
       legend.position = "bottom",
-      legend.key.size = unit(0.5, "cm"),
-      panel.grid.major = element_blank(),
-      panel.grid.minor = element_blank(),
-      strip.background = element_rect(fill = "gray95", color = NA),
-      strip.text = element_text(size = 10, face = "bold"),
-      plot.margin = margin(10, 10, 10, 10)
+      panel.grid = element_blank(),
+      strip.background = element_rect(fill = "white", color = "black"),
+      strip.text = element_text(size = 9, face = "plain"),
+      plot.background = element_rect(fill = "white", color = NA),
+      panel.background = element_rect(fill = "white", color = NA),
+      plot.margin = margin(8, 8, 8, 8)
     )
 }
 
 theme_set(theme_publication())
 
-# ============================================================================
-# 2. READ AND FILTER DATA
-# ============================================================================
+# -----------------------------------------------------------------------------
+# 2. Read and validate data
+# -----------------------------------------------------------------------------
 
-cat("========================================\n")
-cat("SV ANALYSIS PIPELINE - 20 FIGURES\n")
-cat("========================================\n")
-
-# Read data
-sv_data <- read.delim("FullGenome_Lineage_Deconvolution_data.tsv", 
-                      stringsAsFactors = FALSE)
-
-# Filter to main chromosomes only
-sv_data <- sv_data %>%
-  filter(grepl("^Pp0[1-8]$", CHR))
-
-cat(paste("Total SVs analyzed:", nrow(sv_data), "\n"))
-cat(paste("Chromosomes:", paste(unique(sv_data$CHR), collapse=", "), "\n\n"))
-
-# ============================================================================
-# 3. EXTRACT HAPLOTYPE INFORMATION
-# ============================================================================
-#### Note CA1 to WA1 is accession name cod by Authors
-samples <- c("CA1", "EA5", "WA2", "GA1", "LA1", "LA2", "PA1", "EA3", "WA1")
-
-split_phased_genotype <- function(gt) {
-  if(gt %in% c("./.", "0/0", "1/1", "0/1", "1/0")) {
-    parts <- strsplit(gt, "/")[[1]]
-    return(list(hap1 = as.numeric(parts[1]), hap2 = as.numeric(parts[2])))
-  } else {
-    return(list(hap1 = NA_real_, hap2 = NA_real_))
-  }
+if (!file.exists(input_file)) {
+  stop("Input file not found: ", input_file)
 }
 
-cat("Extracting haplotype information...\n")
-for(sample in samples) {
-  haps <- lapply(sv_data[[sample]], function(x) split_phased_genotype(x))
-  sv_data[[paste0(sample, "_hap1")]] <- sapply(haps, function(x) x$hap1)
-  sv_data[[paste0(sample, "_hap2")]] <- sapply(haps, function(x) x$hap2)
-  sv_data[[paste0(sample, "_carrier")]] <- 
-    sv_data[[paste0(sample, "_hap1")]] == 1 | sv_data[[paste0(sample, "_hap2")]] == 1
-}
-cat("Complete!\n\n")
-
-# ============================================================================
-# 4. DEFINE PEDIGREE AND GENERATIONS
-# ============================================================================
-
-sample_metadata <- data.frame(
-  sample = samples,
-  generation = c(5, 4, 4, 3, 1, 1, 2, 2, 2),
-  lineage = c("Mixed", "Meltilinage", "Other", "Mixed", 
-              "Meltilinage", "Meltilinage", "Meltilinage", "Other", "Introduced"),
-  role = c("Proband_G5", "G4_Progeny", "G4_Introgressed", "G3_Progeny",
-           "Founder", "Founder", "G2_Progeny", "G2_Introgressed", "G1.5_Introgressed"),
-  parent = c("EA5,WA2", "GA1", "Unknown", "PA1,EA3", "None", "None", "WA1", "Unknown", "Missing_F1"),
-  stringsAsFactors = FALSE
+sv_data <- read.delim(
+  input_file,
+  stringsAsFactors = FALSE,
+  check.names = FALSE
 )
 
-# ============================================================================
-# 5. CLASSIFY SV CATEGORIES
-# ============================================================================
+sample_names <- c(
+  "KHRLG", "BT", "SU", "PDYPT", "BJ25",
+  "Z1_3", "ZYP7", "ZYP9", "MYQL", "ZYP27"
+)
 
-cat("Classifying SVs...\n")
+required_columns <- c(
+  "CHR", "POS", "TYPE", "LEN", "ORIGIN",
+  sample_names
+)
 
-sv_data <- sv_data %>%
-  mutate(
-    # Ancestral meltilinage (from LA1/LA2)
-    ancestral_meltilinage = (LA1_carrier | LA2_carrier) & 
-      (PA1_carrier | GA1_carrier | EA5_carrier | CA1_carrier),
-    
-    # Introduced via WA1 (G1.5 introduction)
-    introduced_via_WA1 = WA1_carrier & !LA1_carrier & !LA2_carrier &
-      (PA1_carrier | GA1_carrier | EA5_carrier | CA1_carrier),
-    
-    # Introduced via EA3 (G2 introduction)
-    introduced_via_EA3 = EA3_carrier & GA1_carrier & 
-      !LA1_carrier & !LA2_carrier & !PA1_carrier & !WA1_carrier &
-      (EA5_carrier | CA1_carrier),
-    
-    # Introduced via WA2 (G4 introduction)
-    introduced_via_WA2 = WA2_carrier & CA1_carrier & 
-      !LA1_carrier & !LA2_carrier & !PA1_carrier & !WA1_carrier &
-      !GA1_carrier & !EA5_carrier,
-    
-    # De novo events by generation
-    de_novo_G5 = CA1_carrier & !EA5_carrier & !WA2_carrier &
-      !GA1_carrier & !PA1_carrier & !WA1_carrier &
-      !LA1_carrier & !LA2_carrier,
-    
-    de_novo_G4 = EA5_carrier & !GA1_carrier & !PA1_carrier & !WA1_carrier &
-      !LA1_carrier & !LA2_carrier & !CA1_carrier,
-    
-    de_novo_G3 = GA1_carrier & !PA1_carrier & !WA1_carrier & !EA3_carrier &
-      !LA1_carrier & !LA2_carrier,
-    
-    de_novo_G2 = PA1_carrier & !WA1_carrier & !LA1_carrier & !LA2_carrier,
-    
-    de_novo_WA1 = WA1_carrier & !LA1_carrier & !LA2_carrier &
-      !PA1_carrier & !GA1_carrier & !EA5_carrier & !CA1_carrier,
-    
-    # Lost in meltilinage
-    lost_in_meltilinage = (LA1_carrier | LA2_carrier) & 
-      !WA1_carrier & !PA1_carrier & !GA1_carrier & !EA5_carrier & !CA1_carrier,
-    
-    # Private variants
-    private_LA1 = LA1_carrier & !LA2_carrier & !PA1_carrier & !GA1_carrier & !EA5_carrier & !CA1_carrier,
-    private_LA2 = LA2_carrier & !LA1_carrier & !PA1_carrier & !GA1_carrier & !EA5_carrier & !CA1_carrier,
-    private_WA2 = WA2_carrier & !CA1_carrier & !EA5_carrier & !GA1_carrier & 
-      !LA1_carrier & !LA2_carrier & !EA3_carrier,
-    private_EA3 = EA3_carrier & !GA1_carrier & !EA5_carrier & !CA1_carrier & 
-      !LA1_carrier & !LA2_carrier & !WA2_carrier
+missing_columns <- setdiff(required_columns, names(sv_data))
+
+if (length(missing_columns) > 0) {
+  stop(
+    "The following required columns are missing: ",
+    paste(missing_columns, collapse = ", ")
   )
+}
 
-# Comprehensive classification
 sv_data <- sv_data %>%
+  filter(grepl("^Pp0[1-8]$", CHR)) %>%
   mutate(
-    sv_class = case_when(
-      de_novo_G5 ~ "De novo G5 (CA1)",
-      de_novo_G4 ~ "De novo G4 (EA5)",
-      de_novo_G3 ~ "De novo G3 (GA1)",
-      de_novo_G2 ~ "De novo G2 (PA1)",
-      de_novo_WA1 ~ "De novo WA1",
-      introduced_via_WA1 ~ "Introduced via WA1 (G1.5)",
-      introduced_via_EA3 ~ "Introduced via EA3 (G2)",
-      introduced_via_WA2 ~ "Introduced via WA2 (G4)",
-      ancestral_meltilinage ~ "Ancestral (Meltilinage)",
-      lost_in_meltilinage ~ "Lost in Meltilinage",
-      private_LA1 ~ "Private LA1",
-      private_LA2 ~ "Private LA2",
-      private_WA2 ~ "Private WA2",
-      private_EA3 ~ "Private EA3",
-      TRUE ~ "Other/Complex"
-    ),
-    
-    sv_type = TYPE,
+    POS = as.numeric(POS),
+    LEN = as.numeric(LEN),
+    sv_type = as.character(TYPE),
     sv_size = abs(LEN),
-    CHR = factor(CHR, levels = paste0("Pp0", 1:8)),
-    
-    size_category = case_when(
-      sv_size < 100 ~ "Small (<100bp)",
-      sv_size < 1000 ~ "Medium (100-1000bp)",
-      sv_size < 10000 ~ "Large (1-10kb)",
-      TRUE ~ "Very large (>10kb)"
-    ),
-    
-    size_bin = cut(sv_size, breaks = c(0, 100, 500, 1000, 5000, 10000, 50000, Inf),
-                   labels = c("<100", "100-500", "500-1000", "1k-5k", "5k-10k", "10k-50k", ">50k"))
+    CHR = factor(CHR, levels = paste0("Pp0", 1:8))
   )
 
-# ============================================================================
-# 6. CALCULATE HAPLOTYPE CONSERVATION
-# ============================================================================
+if (nrow(sv_data) == 0) {
+  stop("No SVs remained after filtering to chromosomes Pp01-Pp08.")
+}
+
+cat("SVs retained:", nrow(sv_data), "\n")
+cat("Chromosomes:", paste(levels(droplevels(sv_data$CHR)), collapse = ", "), "\n")
+
+# -----------------------------------------------------------------------------
+# 3. Genotype parsing
+# -----------------------------------------------------------------------------
+
+parse_genotype <- function(gt) {
+  gt <- as.character(gt)
+
+  valid_gt <- gt %in% c(
+    "0/0", "0/1", "1/0", "1/1",
+    "0|0", "0|1", "1|0", "1|1"
+  )
+
+  allele1 <- rep(NA_real_, length(gt))
+  allele2 <- rep(NA_real_, length(gt))
+
+  if (any(valid_gt)) {
+    split_gt <- strsplit(gt[valid_gt], split = "[/|]")
+    allele1[valid_gt] <- as.numeric(vapply(split_gt, `[`, character(1), 1))
+    allele2[valid_gt] <- as.numeric(vapply(split_gt, `[`, character(1), 2))
+  }
+
+  carrier <- case_when(
+    allele1 == 1 | allele2 == 1 ~ TRUE,
+    !is.na(allele1) & !is.na(allele2) ~ FALSE,
+    TRUE ~ NA
+  )
+
+  genotype <- case_when(
+    is.na(allele1) | is.na(allele2) ~ "./.",
+    allele1 == 0 & allele2 == 0 ~ "0/0",
+    allele1 == 1 & allele2 == 1 ~ "1/1",
+    TRUE ~ "0/1"
+  )
+
+  tibble(
+    allele1 = allele1,
+    allele2 = allele2,
+    carrier = carrier,
+    genotype = genotype
+  )
+}
+
+for (sample_id in sample_names) {
+  parsed <- parse_genotype(sv_data[[sample_id]])
+
+  sv_data[[paste0(sample_id, "_allele1")]] <- parsed$allele1
+  sv_data[[paste0(sample_id, "_allele2")]] <- parsed$allele2
+  sv_data[[paste0(sample_id, "_carrier")]] <- parsed$carrier
+  sv_data[[paste0(sample_id, "_genotype")]] <- parsed$genotype
+}
+
+is_present <- function(x) {
+  tidyr::replace_na(x, FALSE)
+}
+
+# -----------------------------------------------------------------------------
+# 4. Pedigree metadata
+# -----------------------------------------------------------------------------
+
+sample_metadata <- tribble(
+  ~sample, ~generation, ~role, ~reported_parentage,
+  "KHRLG", "G0", "Founder", "Founder",
+  "BT",    "G0", "Founder", "Founder",
+  "SU",    "G1", "Progeny or early-generation accession", "KHRLG/BT-derived breeding stage",
+  "PDYPT", "G2", "Progeny", "Earlier lineage × SU",
+  "BJ25",  "G2", "Introduced parent", "Parent of Z1_3",
+  "Z1_3",  "G3", "Progeny", "PDYPT × BJ25",
+  "ZYP7",  "G4", "Progeny", "Z1_3 × ungenotyped parent",
+  "ZYP9",  "G4", "Progeny", "Z1_3 × ungenotyped parent",
+  "MYQL",  "G4", "Introduced parent", "Parent of ZYP27",
+  "ZYP27", "G5", "Progeny", "ZYP7 × MYQL"
+) %>%
+  mutate(
+    generation = factor(
+      generation,
+      levels = c("G0", "G1", "G2", "G3", "G4", "G5")
+    )
+  )
+
+write.csv(
+  sample_metadata,
+  file.path(table_dir, "Sample_Metadata.csv"),
+  row.names = FALSE
+)
+
+# -----------------------------------------------------------------------------
+# 5. Candidate SV-origin classification
+# -----------------------------------------------------------------------------
 
 sv_data <- sv_data %>%
   mutate(
-    haplotype_WA1 = case_when(WA1_carrier & WA1_hap1 == 1 ~ "hap1",
-                              WA1_carrier & WA1_hap2 == 1 ~ "hap2",
-                              TRUE ~ NA_character_),
-    haplotype_PA1 = case_when(PA1_carrier & PA1_hap1 == 1 ~ "hap1",
-                              PA1_carrier & PA1_hap2 == 1 ~ "hap2",
-                              TRUE ~ NA_character_),
-    haplotype_GA1 = case_when(GA1_carrier & GA1_hap1 == 1 ~ "hap1",
-                              GA1_carrier & GA1_hap2 == 1 ~ "hap2",
-                              TRUE ~ NA_character_),
-    haplotype_EA5 = case_when(EA5_carrier & EA5_hap1 == 1 ~ "hap1",
-                              EA5_carrier & EA5_hap2 == 1 ~ "hap2",
-                              TRUE ~ NA_character_),
-    haplotype_CA1 = case_when(CA1_carrier & CA1_hap1 == 1 ~ "hap1",
-                              CA1_carrier & CA1_hap2 == 1 ~ "hap2",
-                              TRUE ~ NA_character_)
+    founder_derived =
+      (is_present(KHRLG_carrier) | is_present(BT_carrier)) &
+      (
+        is_present(PDYPT_carrier) |
+        is_present(Z1_3_carrier) |
+        is_present(ZYP7_carrier) |
+        is_present(ZYP9_carrier) |
+        is_present(ZYP27_carrier)
+      ),
+
+    introduced_via_SU =
+      is_present(SU_carrier) &
+      !is_present(KHRLG_carrier) &
+      !is_present(BT_carrier) &
+      (
+        is_present(PDYPT_carrier) |
+        is_present(Z1_3_carrier) |
+        is_present(ZYP7_carrier) |
+        is_present(ZYP9_carrier) |
+        is_present(ZYP27_carrier)
+      ),
+
+    introduced_via_BJ25 =
+      is_present(BJ25_carrier) &
+      !is_present(KHRLG_carrier) &
+      !is_present(BT_carrier) &
+      !is_present(SU_carrier) &
+      !is_present(PDYPT_carrier) &
+      (
+        is_present(Z1_3_carrier) |
+        is_present(ZYP7_carrier) |
+        is_present(ZYP9_carrier) |
+        is_present(ZYP27_carrier)
+      ),
+
+    introduced_via_MYQL =
+      is_present(MYQL_carrier) &
+      is_present(ZYP27_carrier) &
+      !is_present(KHRLG_carrier) &
+      !is_present(BT_carrier) &
+      !is_present(SU_carrier) &
+      !is_present(PDYPT_carrier) &
+      !is_present(BJ25_carrier) &
+      !is_present(Z1_3_carrier) &
+      !is_present(ZYP7_carrier) &
+      !is_present(ZYP9_carrier),
+
+    putative_new_PDYPT =
+      is_present(PDYPT_carrier) &
+      !is_present(KHRLG_carrier) &
+      !is_present(BT_carrier) &
+      !is_present(SU_carrier),
+
+    putative_new_Z1_3 =
+      is_present(Z1_3_carrier) &
+      !is_present(PDYPT_carrier) &
+      !is_present(BJ25_carrier) &
+      !is_present(KHRLG_carrier) &
+      !is_present(BT_carrier) &
+      !is_present(SU_carrier),
+
+    putative_new_ZYP7 =
+      is_present(ZYP7_carrier) &
+      !is_present(Z1_3_carrier) &
+      !is_present(PDYPT_carrier) &
+      !is_present(BJ25_carrier) &
+      !is_present(KHRLG_carrier) &
+      !is_present(BT_carrier) &
+      !is_present(SU_carrier),
+
+    putative_new_ZYP9 =
+      is_present(ZYP9_carrier) &
+      !is_present(Z1_3_carrier) &
+      !is_present(PDYPT_carrier) &
+      !is_present(BJ25_carrier) &
+      !is_present(KHRLG_carrier) &
+      !is_present(BT_carrier) &
+      !is_present(SU_carrier),
+
+    putative_new_ZYP27 =
+      is_present(ZYP27_carrier) &
+      !is_present(ZYP7_carrier) &
+      !is_present(MYQL_carrier) &
+      !is_present(Z1_3_carrier) &
+      !is_present(PDYPT_carrier) &
+      !is_present(BJ25_carrier) &
+      !is_present(SU_carrier) &
+      !is_present(KHRLG_carrier) &
+      !is_present(BT_carrier),
+
+    lost_founder_variant =
+      (is_present(KHRLG_carrier) | is_present(BT_carrier)) &
+      !is_present(PDYPT_carrier) &
+      !is_present(Z1_3_carrier) &
+      !is_present(ZYP7_carrier) &
+      !is_present(ZYP9_carrier) &
+      !is_present(ZYP27_carrier),
+
+    private_KHRLG =
+      is_present(KHRLG_carrier) &
+      !is_present(BT_carrier) &
+      !is_present(SU_carrier) &
+      !is_present(PDYPT_carrier) &
+      !is_present(BJ25_carrier) &
+      !is_present(Z1_3_carrier) &
+      !is_present(ZYP7_carrier) &
+      !is_present(ZYP9_carrier) &
+      !is_present(MYQL_carrier) &
+      !is_present(ZYP27_carrier),
+
+    private_BT =
+      is_present(BT_carrier) &
+      !is_present(KHRLG_carrier) &
+      !is_present(SU_carrier) &
+      !is_present(PDYPT_carrier) &
+      !is_present(BJ25_carrier) &
+      !is_present(Z1_3_carrier) &
+      !is_present(ZYP7_carrier) &
+      !is_present(ZYP9_carrier) &
+      !is_present(MYQL_carrier) &
+      !is_present(ZYP27_carrier),
+
+    private_BJ25 =
+      is_present(BJ25_carrier) &
+      !is_present(KHRLG_carrier) &
+      !is_present(BT_carrier) &
+      !is_present(SU_carrier) &
+      !is_present(PDYPT_carrier) &
+      !is_present(Z1_3_carrier) &
+      !is_present(ZYP7_carrier) &
+      !is_present(ZYP9_carrier) &
+      !is_present(MYQL_carrier) &
+      !is_present(ZYP27_carrier),
+
+    private_MYQL =
+      is_present(MYQL_carrier) &
+      !is_present(KHRLG_carrier) &
+      !is_present(BT_carrier) &
+      !is_present(SU_carrier) &
+      !is_present(PDYPT_carrier) &
+      !is_present(BJ25_carrier) &
+      !is_present(Z1_3_carrier) &
+      !is_present(ZYP7_carrier) &
+      !is_present(ZYP9_carrier) &
+      !is_present(ZYP27_carrier),
+
+    sv_class = case_when(
+      introduced_via_MYQL ~ "Introduced via MYQL",
+      introduced_via_BJ25 ~ "Introduced via BJ25",
+      introduced_via_SU ~ "Introduced via SU",
+      putative_new_ZYP27 ~ "Putative new in ZYP27",
+      putative_new_ZYP7 ~ "Putative new in ZYP7",
+      putative_new_ZYP9 ~ "Putative new in ZYP9",
+      putative_new_Z1_3 ~ "Putative new in Z1_3",
+      putative_new_PDYPT ~ "Putative new in PDYPT",
+      founder_derived ~ "Founder-derived",
+      lost_founder_variant ~ "Founder variant not retained",
+      private_KHRLG ~ "Private KHRLG",
+      private_BT ~ "Private BT",
+      private_BJ25 ~ "Private BJ25",
+      private_MYQL ~ "Private MYQL",
+      TRUE ~ "Other or unresolved"
+    ),
+
+    size_category = case_when(
+      sv_size < 100 ~ "<100 bp",
+      sv_size < 1000 ~ "100-999 bp",
+      sv_size < 10000 ~ "1-9.9 kb",
+      TRUE ~ ">=10 kb"
+    ),
+
+    size_bin = cut(
+      sv_size,
+      breaks = c(0, 100, 500, 1000, 5000, 10000, 50000, Inf),
+      labels = c(
+        "<100", "100-499", "500-999",
+        "1-4.9k", "5-9.9k", "10-49.9k", ">=50k"
+      ),
+      include.lowest = TRUE,
+      right = FALSE
+    )
   )
 
-# ============================================================================
-# 7. SUMMARY STATISTICS
-# ============================================================================
+# -----------------------------------------------------------------------------
+# 6. Long-format carrier and allele-state tables
+# -----------------------------------------------------------------------------
 
-cat("\n========================================\n")
-cat("SUMMARY STATISTICS\n")
-cat("========================================\n")
+carrier_columns <- paste0(sample_names, "_carrier")
+allele1_columns <- paste0(sample_names, "_allele1")
+allele2_columns <- paste0(sample_names, "_allele2")
+
+carrier_long <- sv_data %>%
+  mutate(SV_ID = paste(CHR, POS, TYPE, LEN, sep = ":")) %>%
+  select(SV_ID, CHR, POS, TYPE, LEN, sv_size, sv_class, all_of(carrier_columns)) %>%
+  pivot_longer(
+    cols = all_of(carrier_columns),
+    names_to = "sample",
+    values_to = "carrier"
+  ) %>%
+  mutate(sample = str_remove(sample, "_carrier$")) %>%
+  left_join(sample_metadata, by = "sample")
+
+allele_long <- sv_data %>%
+  mutate(SV_ID = paste(CHR, POS, TYPE, LEN, sep = ":")) %>%
+  select(
+    SV_ID, CHR, POS, TYPE, LEN,
+    all_of(allele1_columns),
+    all_of(allele2_columns)
+  ) %>%
+  pivot_longer(
+    cols = c(all_of(allele1_columns), all_of(allele2_columns)),
+    names_to = c("sample", "allele"),
+    names_pattern = "^(.*)_(allele[12])$",
+    values_to = "state"
+  ) %>%
+  pivot_wider(names_from = allele, values_from = state) %>%
+  left_join(sample_metadata, by = "sample")
+
+# -----------------------------------------------------------------------------
+# 7. Summary tables
+# -----------------------------------------------------------------------------
 
 classification_summary <- sv_data %>%
-  group_by(sv_class) %>%
-  summarise(Count = n(), Percentage = round(n() / nrow(sv_data) * 100, 2)) %>%
+  count(sv_class, name = "Count") %>%
+  mutate(Percentage = round(100 * Count / sum(Count), 2)) %>%
   arrange(desc(Count))
 
-print(classification_summary)
-
-# Export summary table
-write.csv(classification_summary, "SV_Tables/Table1_SV_Classification_Summary.csv", row.names = FALSE)
-
-# SV type distribution
 sv_type_summary <- sv_data %>%
-  group_by(sv_type) %>%
-  summarise(Count = n(), Percentage = round(n() / nrow(sv_data) * 100, 2))
+  count(sv_type, name = "Count") %>%
+  mutate(Percentage = round(100 * Count / sum(Count), 2)) %>%
+  arrange(desc(Count))
 
-write.csv(sv_type_summary, "SV_Tables/Table2_SV_Type_Distribution.csv", row.names = FALSE)
-
-# Size distribution by class
 size_summary <- sv_data %>%
-  group_by(sv_class, size_category) %>%
-  summarise(Count = n(), .groups = "drop") %>%
-  pivot_wider(names_from = size_category, values_from = Count, values_fill = 0)
-
-write.csv(size_summary, "SV_Tables/Table3_Size_Distribution_by_Class.csv", row.names = FALSE)
-
-# Generation-specific counts
-generation_counts <- sv_data %>%
-  summarise(
-    G1_Ancestral = sum(LA1_carrier | LA2_carrier, na.rm = TRUE),
-    G2_Introduced_WA1 = sum(WA1_carrier & !LA1_carrier & !LA2_carrier, na.rm = TRUE),
-    G2_Progeny = sum(PA1_carrier, na.rm = TRUE),
-    G3_Progeny = sum(GA1_carrier, na.rm = TRUE),
-    G4_Progeny = sum(EA5_carrier, na.rm = TRUE),
-    G5_Progeny = sum(CA1_carrier, na.rm = TRUE)
+  count(sv_class, size_category, name = "Count") %>%
+  pivot_wider(
+    names_from = size_category,
+    values_from = Count,
+    values_fill = 0
   )
 
-write.csv(generation_counts, "SV_Tables/Table4_Generation_Counts.csv", row.names = FALSE)
+sample_sv_counts <- carrier_long %>%
+  filter(carrier %in% TRUE) %>%
+  count(sample, generation, role, name = "SV_Count") %>%
+  arrange(generation, sample)
 
-# ============================================================================
-# 8. CREATE 20 PUBLICATION-QUALITY FIGURES
-# ============================================================================
+generation_sv_counts <- carrier_long %>%
+  filter(carrier %in% TRUE) %>%
+  distinct(SV_ID, generation) %>%
+  count(generation, name = "SV_Count") %>%
+  arrange(generation)
 
-cat("\nGenerating 20 publication-quality figures...\n")
+chromosome_summary <- sv_data %>%
+  count(CHR, sv_class, name = "Count")
 
-# Color palette (Nature-style)
-nature_palette <- c(
-  "Ancestral (Meltilinage)" = "#4D4D4D",
-  "Introduced via WA1 (G1.5)" = "#FF7F00",
-  "Introduced via EA3 (G2)" = "#A65628",
-  "Introduced via WA2 (G4)" = "#F781BF",
-  "De novo G5 (CA1)" = "#E41A1C",
-  "De novo G4 (EA5)" = "#377EB8",
-  "De novo G3 (GA1)" = "#4DAF4A",
-  "De novo G2 (PA1)" = "#984EA3",
-  "De novo WA1" = "#FDBF6F",
-  "Lost in Meltilinage" = "#A6D854",
-  "Private LA1" = "#B3B3B3",
-  "Private LA2" = "#B3B3B3",
-  "Private WA2" = "#B3B3B3",
-  "Private EA3" = "#B3B3B3",
-  "Other/Complex" = "#E5E5E5"
+write.csv(
+  classification_summary,
+  file.path(table_dir, "Table1_SV_Classification.csv"),
+  row.names = FALSE
+)
+write.csv(
+  sv_type_summary,
+  file.path(table_dir, "Table2_SV_Type_Distribution.csv"),
+  row.names = FALSE
+)
+write.csv(
+  size_summary,
+  file.path(table_dir, "Table3_Size_Distribution_by_Class.csv"),
+  row.names = FALSE
+)
+write.csv(
+  sample_sv_counts,
+  file.path(table_dir, "Table4_SV_Counts_by_Accession.csv"),
+  row.names = FALSE
+)
+write.csv(
+  generation_sv_counts,
+  file.path(table_dir, "Table5_SV_Counts_by_Generation.csv"),
+  row.names = FALSE
+)
+write.csv(
+  chromosome_summary,
+  file.path(table_dir, "Table6_Chromosome_by_Class.csv"),
+  row.names = FALSE
 )
 
-# -------------------------------------------------------------------------
-# Figure 1: Overall SV Classification (Horizontal Bar Plot)
-# -------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# 8. Haplotype-state conservation along the focal lineage
+# -----------------------------------------------------------------------------
+
+haplotype_state <- function(allele1, allele2) {
+  case_when(
+    is.na(allele1) | is.na(allele2) ~ NA_character_,
+    allele1 == 0 & allele2 == 0 ~ "0/0",
+    allele1 == 1 & allele2 == 1 ~ "1/1",
+    TRUE ~ "0/1"
+  )
+}
+
+for (sample_id in sample_names) {
+  sv_data[[paste0(sample_id, "_state")]] <- haplotype_state(
+    sv_data[[paste0(sample_id, "_allele1")]],
+    sv_data[[paste0(sample_id, "_allele2")]]
+  )
+}
+
+count_state_conservation <- function(data, from_sample, to_sample) {
+  from_state <- data[[paste0(from_sample, "_state")]]
+  to_state <- data[[paste0(to_sample, "_state")]]
+
+  tibble(
+    Transition = paste(from_sample, to_sample, sep = " -> "),
+    Evaluable = sum(!is.na(from_state) & !is.na(to_state)),
+    Conserved = sum(
+      !is.na(from_state) &
+        !is.na(to_state) &
+        from_state == to_state
+    )
+  ) %>%
+    mutate(
+      Conservation_Percentage = if_else(
+        Evaluable > 0,
+        round(100 * Conserved / Evaluable, 2),
+        NA_real_
+      )
+    )
+}
+
+transition_pairs <- list(
+  c("KHRLG", "SU"),
+  c("BT", "SU"),
+  c("SU", "PDYPT"),
+  c("PDYPT", "Z1_3"),
+  c("BJ25", "Z1_3"),
+  c("Z1_3", "ZYP7"),
+  c("Z1_3", "ZYP9"),
+  c("ZYP7", "ZYP27"),
+  c("MYQL", "ZYP27")
+)
+
+haplotype_stats <- map_dfr(
+  transition_pairs,
+  ~count_state_conservation(sv_data, .x[1], .x[2])
+)
+
+write.csv(
+  haplotype_stats,
+  file.path(table_dir, "Table7_Genotype_State_Conservation.csv"),
+  row.names = FALSE
+)
+
+# -----------------------------------------------------------------------------
+# 9. Plot palettes
+# -----------------------------------------------------------------------------
+
+class_levels <- c(
+  "Founder-derived",
+  "Introduced via SU",
+  "Introduced via BJ25",
+  "Introduced via MYQL",
+  "Putative new in PDYPT",
+  "Putative new in Z1_3",
+  "Putative new in ZYP7",
+  "Putative new in ZYP9",
+  "Putative new in ZYP27",
+  "Founder variant not retained",
+  "Private KHRLG",
+  "Private BT",
+  "Private BJ25",
+  "Private MYQL",
+  "Other or unresolved"
+)
+
+class_colors <- setNames(
+  colorRampPalette(brewer.pal(12, "Paired"))(length(class_levels)),
+  class_levels
+)
+
+sv_data$sv_class <- factor(sv_data$sv_class, levels = class_levels)
+classification_summary$sv_class <- factor(
+  classification_summary$sv_class,
+  levels = class_levels
+)
+
+# -----------------------------------------------------------------------------
+# 10. Publication figures
+# -----------------------------------------------------------------------------
+
+save_plot <- function(plot_object, file_stem, width, height) {
+  ggsave(
+    filename = file.path(figure_dir, paste0(file_stem, ".png")),
+    plot = plot_object,
+    width = width,
+    height = height,
+    units = "in",
+    dpi = 600,
+    bg = "white"
+  )
+
+  ggsave(
+    filename = file.path(figure_dir, paste0(file_stem, ".pdf")),
+    plot = plot_object,
+    width = width,
+    height = height,
+    units = "in",
+    bg = "white"
+  )
+}
+
+# Figure 1: SV classification
 fig1 <- classification_summary %>%
   filter(Count > 0) %>%
   ggplot(aes(x = reorder(sv_class, Count), y = Count, fill = sv_class)) +
-  geom_bar(stat = "identity", width = 0.7) +
-  geom_text(aes(label = paste0(Count, " (", Percentage, "%)")), 
-            hjust = -0.1, size = 3.2, fontface = "bold") +
-  coord_flip() +
-  scale_fill_manual(values = nature_palette, guide = "none") +
-  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) +
-  labs(title = "A", subtitle = "Structural Variant Classification",
-       x = "", y = "Number of SVs") +
-  theme_publication() +
-  theme(plot.title = element_text(face = "bold", size = 16),
-        plot.subtitle = element_text(size = 12))
+  geom_col(width = 0.72, color = "black", linewidth = 0.25) +
+  geom_text(
+    aes(label = paste0(Count, " (", Percentage, "%)")),
+    hjust = -0.05,
+    size = 3
+  ) +
+  coord_flip(clip = "off") +
+  scale_fill_manual(values = class_colors, drop = FALSE, guide = "none") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.18))) +
+  labs(
+    title = "A",
+    subtitle = "Structural-variant classification",
+    x = NULL,
+    y = "Number of SVs"
+  )
 
-ggsave("SV_Figures/Figure1_Classification_Overview.png", fig1, width = 12, height = 8, dpi = 300, bg = "white")
-ggsave("SV_Figures/Figure1_Classification_Overview.pdf", fig1, width = 12, height = 8)
+save_plot(fig1, "Figure1_SV_Classification", 10, 7)
 
-# -------------------------------------------------------------------------
-# Figure 2: SV Types Across Generations (Stacked Bar)
-# -------------------------------------------------------------------------
-fig2 <- sv_data %>%
-  mutate(generation = case_when(
-    LA1_carrier | LA2_carrier ~ "G1 (Founders)",
-    WA1_carrier ~ "G1.5 (WA1)",
-    PA1_carrier ~ "G2 (PA1)",
-    GA1_carrier ~ "G3 (GA1)",
-    EA5_carrier ~ "G4 (EA5)",
-    CA1_carrier ~ "G5 (CA1)",
-    TRUE ~ "Other"
-  )) %>%
-  filter(generation != "Other") %>%
-  group_by(generation, sv_type) %>%
-  summarise(Count = n(), .groups = "drop") %>%
-  ggplot(aes(x = factor(generation, levels = c("G1 (Founders)", "G1.5 (WA1)", "G2 (PA1)", 
-                                               "G3 (GA1)", "G4 (EA5)", "G5 (CA1)")), 
-             y = Count, fill = sv_type)) +
-  geom_bar(stat = "identity", position = "stack", width = 0.7) +
-  scale_fill_manual(values = c("INDEL" = "#4D4D4D", "BND" = "#E41A1C", "OTHER" = "#377EB8")) +
-  labs(title = "B", subtitle = "SV Types Across Generations",
-       x = "Generation", y = "Number of SVs", fill = "SV Type") +
-  theme_publication() +
-  theme(legend.position = "top")
+# Figure 2: SV types by generation
+generation_type_data <- carrier_long %>%
+  filter(carrier %in% TRUE) %>%
+  distinct(SV_ID, generation, TYPE) %>%
+  count(generation, TYPE, name = "Count")
 
-ggsave("SV_Figures/Figure2_SV_Types_By_Generation.png", fig2, width = 10, height = 6, dpi = 300, bg = "white")
+fig2 <- generation_type_data %>%
+  ggplot(aes(x = generation, y = Count, fill = TYPE)) +
+  geom_col(width = 0.72, color = "black", linewidth = 0.2) +
+  scale_fill_brewer(palette = "Set2") +
+  labs(
+    title = "B",
+    subtitle = "SV types represented from G0 to G5",
+    x = "Generation",
+    y = "Number of SVs",
+    fill = "SV type"
+  )
 
-# -------------------------------------------------------------------------
-# Figure 3: Chromosome Distribution of SVs (Circular Manhatten Style)
-# -------------------------------------------------------------------------
-chromosome_stats <- sv_data %>%
-  group_by(CHR) %>%
-  summarise(
-    Total = n(),
-    Ancestral = sum(sv_class == "Ancestral (Meltilinage)"),
-    Introduced = sum(grepl("Introduced", sv_class)),
-    DeNovo = sum(grepl("De novo", sv_class))
-  ) %>%
-  pivot_longer(-CHR, names_to = "Type", values_to = "Count")
+save_plot(fig2, "Figure2_SV_Types_by_Generation", 9, 6)
 
-fig3 <- chromosome_stats %>%
-  ggplot(aes(x = CHR, y = Count, fill = Type)) +
-  geom_bar(stat = "identity", position = "dodge", width = 0.7) +
-  scale_fill_manual(values = c("Total" = "#4D4D4D", "Ancestral" = "#A6D854", 
-                               "Introduced" = "#FF7F00", "DeNovo" = "#E41A1C")) +
-  labs(title = "C", subtitle = "SV Distribution by Chromosome",
-       x = "Chromosome", y = "Number of SVs", fill = "SV Category") +
-  theme_publication() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-
-ggsave("SV_Figures/Figure3_Chromosome_Distribution.png", fig3, width = 12, height = 6, dpi = 300, bg = "white")
-
-# -------------------------------------------------------------------------
-# Figure 4: De Novo SVs by Chromosome (Detailed)
-# -------------------------------------------------------------------------
-fig4 <- sv_data %>%
-  filter(grepl("De novo", sv_class)) %>%
-  group_by(CHR, sv_class) %>%
-  summarise(Count = n(), .groups = "drop") %>%
+# Figure 3: SV classes by chromosome
+fig3 <- chromosome_summary %>%
   ggplot(aes(x = CHR, y = Count, fill = sv_class)) +
-  geom_bar(stat = "identity", position = position_dodge(0.9), width = 0.8) +
-  scale_fill_manual(values = nature_palette) +
-  labs(title = "D", subtitle = "De Novo SV Distribution by Chromosome",
-       x = "Chromosome", y = "Number of De Novo SVs", fill = "") +
-  theme_publication() +
-  theme(legend.position = "bottom", legend.text = element_text(size = 8))
-
-ggsave("SV_Figures/Figure4_DeNovo_By_Chromosome.png", fig4, width = 12, height = 6, dpi = 300, bg = "white")
-
-# -------------------------------------------------------------------------
-# Figure 5: Size Distribution by Class (Density Plot)
-# -------------------------------------------------------------------------
-fig5 <- sv_data %>%
-  filter(sv_class %in% c("Ancestral (Meltilinage)", "Introduced via WA1 (G1.5)",
-                         "Introduced via EA3 (G2)", "Introduced via WA2 (G4)",
-                         "De novo G5 (CA1)")) %>%
-  mutate(sv_class = factor(sv_class, levels = c("Ancestral (Meltilinage)", 
-                                                "Introduced via WA1 (G1.5)",
-                                                "Introduced via EA3 (G2)",
-                                                "Introduced via WA2 (G4)",
-                                                "De novo G5 (CA1)"))) %>%
-  ggplot(aes(x = log10(sv_size + 1), fill = sv_class, color = sv_class)) +
-  geom_density(alpha = 0.4, linewidth = 0.8) +
-  scale_fill_manual(values = nature_palette) +
-  scale_color_manual(values = nature_palette) +
-  labs(title = "E", subtitle = "SV Size Distribution by Class",
-       x = expression(log[10]("SV Size (bp) + 1")), y = "Density",
-       fill = "", color = "") +
-  theme_publication() +
-  theme(legend.position = "bottom", legend.text = element_text(size = 8))
-
-ggsave("SV_Figures/Figure5_Size_Distribution.png", fig5, width = 10, height = 6, dpi = 300, bg = "white")
-
-# -------------------------------------------------------------------------
-# Figure 6: Size Distribution by Generation (Ridge Plot)
-# -------------------------------------------------------------------------
-fig6 <- sv_data %>%
-  mutate(generation = case_when(
-    LA1_carrier | LA2_carrier ~ "G1",
-    WA1_carrier ~ "G1.5",
-    PA1_carrier ~ "G2",
-    GA1_carrier ~ "G3",
-    EA5_carrier ~ "G4",
-    CA1_carrier ~ "G5",
-    TRUE ~ NA_character_
-  )) %>%
-  filter(!is.na(generation)) %>%
-  ggplot(aes(x = log10(sv_size + 1), y = factor(generation, levels = rev(c("G1", "G1.5", "G2", "G3", "G4", "G5"))), 
-             fill = after_stat(x))) +
-  geom_density_ridges_gradient(scale = 2, rel_min_height = 0.01, alpha = 0.7) +
-  scale_fill_viridis_c(option = "plasma", name = "log10(SV Size)") +
-  labs(title = "F", subtitle = "SV Size Distribution Across Generations",
-       x = expression(log[10]("SV Size (bp) + 1")), y = "Generation") +
-  theme_publication()
-
-ggsave("SV_Figures/Figure6_Size_Ridge.png", fig6, width = 10, height = 7, dpi = 300, bg = "white")
-
-# -------------------------------------------------------------------------
-# Figure 7: Heatmap of SV Size Distribution
-# -------------------------------------------------------------------------
-heatmap_data <- sv_data %>%
-  group_by(sv_class, size_bin) %>%
-  summarise(Count = n(), .groups = "drop") %>%
-  mutate(Count_log = log10(Count + 1))
-
-fig7 <- heatmap_data %>%
-  ggplot(aes(x = sv_class, y = size_bin, fill = Count_log)) +
-  geom_tile() +
-  scale_fill_gradient(low = "white", high = "#E41A1C", 
-                      name = expression(log[10]("Count + 1"))) +
-  labs(title = "G", subtitle = "SV Size Distribution Heatmap",
-       x = "", y = "SV Size (bp)") +
-  theme_publication() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-
-ggsave("SV_Figures/Figure7_Size_Heatmap.png", fig7, width = 12, height = 6, dpi = 300, bg = "white")
-
-# -------------------------------------------------------------------------
-# Figure 8: Haplotype Conservation Across Generations
-# -------------------------------------------------------------------------
-haplotype_stats <- sv_data %>%
-  summarise(
-    WA1_to_PA1 = sum(!is.na(haplotype_WA1) & !is.na(haplotype_PA1) & 
-                       haplotype_WA1 == haplotype_PA1, na.rm = TRUE),
-    PA1_to_GA1 = sum(!is.na(haplotype_PA1) & !is.na(haplotype_GA1) & 
-                       haplotype_PA1 == haplotype_GA1, na.rm = TRUE),
-    GA1_to_EA5 = sum(!is.na(haplotype_GA1) & !is.na(haplotype_EA5) & 
-                       haplotype_GA1 == haplotype_EA5, na.rm = TRUE),
-    EA5_to_CA1 = sum(!is.na(haplotype_EA5) & !is.na(haplotype_CA1) & 
-                       haplotype_EA5 == haplotype_CA1, na.rm = TRUE)
-  ) %>%
-  pivot_longer(everything(), names_to = "Transition", values_to = "Count")
-
-fig8 <- haplotype_stats %>%
-  ggplot(aes(x = factor(Transition, levels = c("WA1_to_PA1", "PA1_to_GA1", "GA1_to_EA5", "EA5_to_CA1")), 
-             y = Count, fill = Transition)) +
-  geom_bar(stat = "identity", width = 0.6) +
-  geom_text(aes(label = Count), vjust = -0.5, size = 4, fontface = "bold") +
-  scale_fill_brewer(palette = "Blues", guide = "none") +
-  scale_x_discrete(labels = c("WA1→PA1", "PA1→GA1", "GA1→EA5", "EA5→CA1")) +
-  labs(title = "H", subtitle = "Haplotype Conservation Across Generations",
-       x = "Generation Transition", y = "Number of SVs with Conserved Haplotype") +
-  theme_publication()
-
-ggsave("SV_Figures/Figure8_Haplotype_Conservation.png", fig8, width = 8, height = 6, dpi = 300, bg = "white")
-
-# -------------------------------------------------------------------------
-# Figure 9: Introduction Events Comparison
-# -------------------------------------------------------------------------
-intro_stats <- sv_data %>%
-  filter(grepl("Introduced", sv_class)) %>%
-  group_by(sv_class) %>%
-  summarise(Count = n(), Percentage = n() / nrow(sv_data) * 100) %>%
-  mutate(Label = paste0(Count, " (", round(Percentage, 1), "%)"))
-
-fig9 <- intro_stats %>%
-  ggplot(aes(x = reorder(sv_class, Count), y = Count, fill = sv_class)) +
-  geom_bar(stat = "identity", width = 0.7) +
-  geom_text(aes(label = Label), hjust = -0.1, size = 3.5) +
-  coord_flip() +
-  scale_fill_manual(values = nature_palette, guide = "none") +
-  labs(title = "I", subtitle = "Introduction Events into Meltilinage",
-       x = "", y = "Number of SVs") +
-  theme_publication()
-
-ggsave("SV_Figures/Figure9_Introduction_Events.png", fig9, width = 10, height = 5, dpi = 300, bg = "white")
-
-# -------------------------------------------------------------------------
-# Figure 10: De Novo Events by Generation
-# -------------------------------------------------------------------------
-denovo_stats <- sv_data %>%
-  filter(grepl("De novo", sv_class)) %>%
-  group_by(sv_class) %>%
-  summarise(Count = n()) %>%
-  mutate(Generation = case_when(
-    sv_class == "De novo G5 (CA1)" ~ "G5 (CA1)",
-    sv_class == "De novo G4 (EA5)" ~ "G4 (EA5)",
-    sv_class == "De novo G3 (GA1)" ~ "G3 (GA1)",
-    sv_class == "De novo G2 (PA1)" ~ "G2 (PA1)",
-    sv_class == "De novo WA1" ~ "G1.5 (WA1)"
-  ))
-
-fig10 <- denovo_stats %>%
-  ggplot(aes(x = factor(Generation, levels = c("G1.5 (WA1)", "G2 (PA1)", "G3 (GA1)", "G4 (EA5)", "G5 (CA1)")), 
-             y = Count, fill = Generation)) +
-  geom_bar(stat = "identity", width = 0.7) +
-  geom_text(aes(label = Count), vjust = -0.5, size = 4, fontface = "bold") +
-  scale_fill_manual(values = c("#FDBF6F", "#984EA3", "#4DAF4A", "#377EB8", "#E41A1C"), guide = "none") +
-  labs(title = "J", subtitle = "De Novo SV Events by Generation",
-       x = "Generation", y = "Number of De Novo SVs") +
-  theme_publication()
-
-ggsave("SV_Figures/Figure10_DeNovo_By_Generation.png", fig10, width = 8, height = 6, dpi = 300, bg = "white")
-
-# -------------------------------------------------------------------------
-# Figure 11: BND vs INDEL Distribution by Class
-# -------------------------------------------------------------------------
-fig11 <- sv_data %>%
-  group_by(sv_class, sv_type) %>%
-  summarise(Count = n(), .groups = "drop") %>%
-  ggplot(aes(x = sv_class, y = Count, fill = sv_type)) +
-  geom_bar(stat = "identity", position = "dodge", width = 0.7) +
-  scale_fill_manual(values = c("INDEL" = "#4D4D4D", "BND" = "#E41A1C", "OTHER" = "#377EB8")) +
-  labs(title = "K", subtitle = "BND vs INDEL Distribution by Class",
-       x = "", y = "Number of SVs", fill = "SV Type") +
-  theme_publication() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-
-ggsave("SV_Figures/Figure11_BND_vs_INDEL.png", fig11, width = 12, height = 6, dpi = 300, bg = "white")
-
-# -------------------------------------------------------------------------
-# Figure 12: Per Chromosome SV Density
-# -------------------------------------------------------------------------
-fig12 <- sv_data %>%
-  group_by(CHR, sv_class) %>%
-  summarise(Count = n(), .groups = "drop") %>%
-  ggplot(aes(x = CHR, y = Count, fill = sv_class)) +
-  geom_bar(stat = "identity", position = "fill", width = 0.8) +
-  scale_fill_manual(values = nature_palette) +
-  labs(title = "L", subtitle = "Relative SV Density by Chromosome",
-       x = "Chromosome", y = "Proportion", fill = "SV Class") +
-  theme_publication() +
+  geom_col(position = "stack", width = 0.75) +
+  scale_fill_manual(values = class_colors, drop = FALSE) +
+  labs(
+    title = "C",
+    subtitle = "Chromosomal distribution of SV classes",
+    x = "Chromosome",
+    y = "Number of SVs",
+    fill = "SV class"
+  ) +
   theme(legend.position = "right")
 
-ggsave("SV_Figures/Figure12_Relative_Density.png", fig12, width = 14, height = 6, dpi = 300, bg = "white")
+save_plot(fig3, "Figure3_SV_Classes_by_Chromosome", 12, 7)
 
-# -------------------------------------------------------------------------
-# Figure 13: SV Size Distribution (Violin Plot)
-# -------------------------------------------------------------------------
-fig13 <- sv_data %>%
-  filter(sv_class %in% c("Ancestral (Meltilinage)", "Introduced via WA1 (G1.5)",
-                         "Introduced via EA3 (G2)", "Introduced via WA2 (G4)")) %>%
-  ggplot(aes(x = sv_class, y = log10(sv_size + 1), fill = sv_class)) +
-  geom_violin(alpha = 0.6, trim = FALSE) +
-  geom_boxplot(width = 0.2, alpha = 0.8, outlier.shape = NA) +
-  scale_fill_manual(values = nature_palette, guide = "none") +
-  labs(title = "M", subtitle = "SV Size Distribution by Class (Violin Plot)",
-       x = "", y = expression(log[10]("SV Size (bp) + 1"))) +
-  theme_publication() +
+# Figure 4: Putative new SVs by chromosome
+fig4_data <- sv_data %>%
+  filter(str_detect(as.character(sv_class), "^Putative new")) %>%
+  count(CHR, sv_class, name = "Count")
+
+fig4 <- fig4_data %>%
+  ggplot(aes(x = CHR, y = Count, fill = sv_class)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.72) +
+  scale_fill_manual(values = class_colors, drop = FALSE) +
+  labs(
+    title = "D",
+    subtitle = "Putative new SVs by chromosome and accession",
+    x = "Chromosome",
+    y = "Number of SVs",
+    fill = NULL
+  )
+
+save_plot(fig4, "Figure4_Putative_New_SVs_by_Chromosome", 11, 6)
+
+# Figure 5: SV size density by major origin class
+major_classes <- c(
+  "Founder-derived",
+  "Introduced via SU",
+  "Introduced via BJ25",
+  "Introduced via MYQL",
+  "Putative new in ZYP27"
+)
+
+fig5 <- sv_data %>%
+  filter(sv_class %in% major_classes, sv_size > 0) %>%
+  ggplot(
+    aes(
+      x = log10(sv_size),
+      fill = sv_class,
+      color = sv_class
+    )
+  ) +
+  geom_density(alpha = 0.25, linewidth = 0.8) +
+  scale_fill_manual(values = class_colors, drop = FALSE) +
+  scale_color_manual(values = class_colors, drop = FALSE) +
+  labs(
+    title = "E",
+    subtitle = "SV size distributions for major origin classes",
+    x = expression(log[10]("SV size (bp)")),
+    y = "Density",
+    fill = NULL,
+    color = NULL
+  )
+
+save_plot(fig5, "Figure5_SV_Size_Density", 10, 6)
+
+# Figure 6: SV size distribution across generations
+generation_size_data <- carrier_long %>%
+  filter(carrier %in% TRUE, sv_size > 0) %>%
+  distinct(SV_ID, generation, sv_size)
+
+fig6 <- generation_size_data %>%
+  ggplot(
+    aes(
+      x = log10(sv_size),
+      y = fct_rev(generation),
+      fill = after_stat(x)
+    )
+  ) +
+  geom_density_ridges_gradient(
+    scale = 2,
+    rel_min_height = 0.01,
+    alpha = 0.8,
+    color = "white",
+    linewidth = 0.25
+  ) +
+  scale_fill_viridis_c(option = "plasma", name = "log10 size") +
+  labs(
+    title = "F",
+    subtitle = "SV size distributions from G0 to G5",
+    x = expression(log[10]("SV size (bp)")),
+    y = "Generation"
+  )
+
+save_plot(fig6, "Figure6_SV_Size_by_Generation", 10, 7)
+
+# Figure 7: SV size-class heatmap
+heatmap_data <- sv_data %>%
+  count(sv_class, size_bin, name = "Count") %>%
+  mutate(Log_Count = log10(Count + 1))
+
+fig7 <- heatmap_data %>%
+  ggplot(aes(x = sv_class, y = size_bin, fill = Log_Count)) +
+  geom_tile(color = "white", linewidth = 0.2) +
+  scale_fill_viridis_c(name = expression(log[10]("count + 1"))) +
+  labs(
+    title = "G",
+    subtitle = "SV size-class distribution",
+    x = NULL,
+    y = "SV size class"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)
+  )
+
+save_plot(fig7, "Figure7_SV_Size_Heatmap", 12, 7)
+
+# Figure 8: Genotype-state conservation
+fig8 <- haplotype_stats %>%
+  ggplot(aes(x = reorder(Transition, Conservation_Percentage), y = Conservation_Percentage)) +
+  geom_col(width = 0.68, fill = "gray55", color = "black", linewidth = 0.25) +
+  geom_text(
+    aes(label = paste0(Conservation_Percentage, "%")),
+    hjust = -0.1,
+    size = 3
+  ) +
+  coord_flip(clip = "off") +
+  scale_y_continuous(
+    limits = c(0, 105),
+    breaks = seq(0, 100, 20),
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+  labs(
+    title = "H",
+    subtitle = "Conservation of diploid genotype states across pedigree transitions",
+    x = NULL,
+    y = "Conserved evaluable SVs (%)"
+  )
+
+save_plot(fig8, "Figure8_Genotype_State_Conservation", 9, 6)
+
+# Figure 9: Introduced SV counts
+introduction_summary <- sv_data %>%
+  filter(str_detect(as.character(sv_class), "^Introduced via")) %>%
+  count(sv_class, name = "Count") %>%
+  mutate(Percentage = round(100 * Count / nrow(sv_data), 2))
+
+fig9 <- introduction_summary %>%
+  ggplot(aes(x = reorder(sv_class, Count), y = Count, fill = sv_class)) +
+  geom_col(width = 0.7, color = "black", linewidth = 0.25) +
+  geom_text(
+    aes(label = paste0(Count, " (", Percentage, "%)")),
+    hjust = -0.08,
+    size = 3
+  ) +
+  coord_flip(clip = "off") +
+  scale_fill_manual(values = class_colors, guide = "none") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.18))) +
+  labs(
+    title = "I",
+    subtitle = "Putative donor-derived SV contributions",
+    x = NULL,
+    y = "Number of SVs"
+  )
+
+save_plot(fig9, "Figure9_Donor_Introductions", 9, 5.5)
+
+# Figure 10: Putative new SV counts by accession
+putative_new_summary <- sv_data %>%
+  filter(str_detect(as.character(sv_class), "^Putative new")) %>%
+  count(sv_class, name = "Count")
+
+fig10 <- putative_new_summary %>%
+  ggplot(aes(x = reorder(sv_class, Count), y = Count, fill = sv_class)) +
+  geom_col(width = 0.7, color = "black", linewidth = 0.25) +
+  geom_text(aes(label = Count), hjust = -0.08, size = 3) +
+  coord_flip(clip = "off") +
+  scale_fill_manual(values = class_colors, guide = "none") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.14))) +
+  labs(
+    title = "J",
+    subtitle = "Putative new SVs identified in pedigree accessions",
+    x = NULL,
+    y = "Number of SVs"
+  )
+
+save_plot(fig10, "Figure10_Putative_New_SVs", 9, 6)
+
+# Figure 11: SV type by class
+fig11 <- sv_data %>%
+  count(sv_class, sv_type, name = "Count") %>%
+  ggplot(aes(x = sv_class, y = Count, fill = sv_type)) +
+  geom_col(position = "dodge", width = 0.75) +
+  scale_fill_brewer(palette = "Set2") +
+  labs(
+    title = "K",
+    subtitle = "SV-type composition within origin classes",
+    x = NULL,
+    y = "Number of SVs",
+    fill = "SV type"
+  ) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
-ggsave("SV_Figures/Figure13_Size_Violin.png", fig13, width = 10, height = 6, dpi = 300, bg = "white")
+save_plot(fig11, "Figure11_SV_Type_by_Class", 12, 7)
 
-# -------------------------------------------------------------------------
-# Figure 14: Cumulative SV Count Across Generations
-# -------------------------------------------------------------------------
-cumulative_data <- sv_data %>%
+# Figure 12: Relative SV-class composition by chromosome
+fig12 <- chromosome_summary %>%
+  ggplot(aes(x = CHR, y = Count, fill = sv_class)) +
+  geom_col(position = "fill", width = 0.75) +
+  scale_fill_manual(values = class_colors, drop = FALSE) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(
+    title = "L",
+    subtitle = "Relative composition of SV classes by chromosome",
+    x = "Chromosome",
+    y = "Proportion",
+    fill = "SV class"
+  ) +
+  theme(legend.position = "right")
+
+save_plot(fig12, "Figure12_Relative_SV_Class_by_Chromosome", 12, 7)
+
+# Figure 13: SV size by major class
+fig13 <- sv_data %>%
+  filter(sv_class %in% major_classes, sv_size > 0) %>%
+  ggplot(aes(x = sv_class, y = log10(sv_size), fill = sv_class)) +
+  geom_violin(alpha = 0.65, trim = FALSE, color = "black", linewidth = 0.25) +
+  geom_boxplot(
+    width = 0.18,
+    outlier.shape = NA,
+    alpha = 0.8,
+    color = "black",
+    linewidth = 0.25
+  ) +
+  scale_fill_manual(values = class_colors, guide = "none") +
+  labs(
+    title = "M",
+    subtitle = "SV size variation among major origin classes",
+    x = NULL,
+    y = expression(log[10]("SV size (bp)"))
+  ) +
+  theme(axis.text.x = element_text(angle = 35, hjust = 1))
+
+save_plot(fig13, "Figure13_SV_Size_Violin", 10, 6)
+
+# Figure 14: SV burden by generation
+fig14 <- generation_sv_counts %>%
+  ggplot(aes(x = generation, y = SV_Count, group = 1)) +
+  geom_line(linewidth = 0.9, color = "black") +
+  geom_point(size = 2.8) +
+  geom_text(aes(label = SV_Count), vjust = -0.7, size = 3) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.12))) +
+  labs(
+    title = "N",
+    subtitle = "Number of distinct SVs represented from G0 to G5",
+    x = "Generation",
+    y = "Number of SVs"
+  )
+
+save_plot(fig14, "Figure14_SV_Burden_by_Generation", 8, 5.5)
+
+# Figure 15: Broad SV-origin composition
+broad_origin <- sv_data %>%
   mutate(
-    cumulative_G1 = sum(LA1_carrier | LA2_carrier),
-    cumulative_G2 = sum(PA1_carrier),
-    cumulative_G3 = sum(GA1_carrier),
-    cumulative_G4 = sum(EA5_carrier),
-    cumulative_G5 = sum(CA1_carrier)
-  ) %>%
-  select(starts_with("cumulative")) %>%
-  distinct() %>%
-  pivot_longer(everything(), names_to = "Generation", values_to = "Count") %>%
-  mutate(Generation = factor(Generation, levels = c("cumulative_G1", "cumulative_G2", 
-                                                    "cumulative_G3", "cumulative_G4", 
-                                                    "cumulative_G5"),
-                             labels = c("G1", "G2", "G3", "G4", "G5")))
-
-fig14 <- cumulative_data %>%
-  ggplot(aes(x = Generation, y = Count, group = 1)) +
-  geom_line(linewidth = 1.2, color = "#4D4D4D") +
-  geom_point(size = 3, color = "#E41A1C") +
-  geom_text(aes(label = Count), vjust = -0.8, size = 4, fontface = "bold") +
-  labs(title = "N", subtitle = "Cumulative SV Count Across Generations",
-       x = "Generation", y = "Total Number of SVs") +
-  theme_publication()
-
-ggsave("SV_Figures/Figure14_Cumulative_Count.png", fig14, width = 8, height = 6, dpi = 300, bg = "white")
-
-# -------------------------------------------------------------------------
-# Figure 15: Novel vs Shared SVs
-# -------------------------------------------------------------------------
-novel_shared <- sv_data %>%
-  mutate(
-    Category = case_when(
-      grepl("Ancestral", sv_class) ~ "Shared (Ancestral)",
-      grepl("Introduced", sv_class) ~ "Introduced",
-      grepl("De novo", sv_class) ~ "Novel (De novo)",
-      TRUE ~ "Other"
+    Broad_Class = case_when(
+      sv_class == "Founder-derived" ~ "Founder-derived",
+      str_detect(as.character(sv_class), "^Introduced via") ~ "Donor-derived",
+      str_detect(as.character(sv_class), "^Putative new") ~ "Putative new",
+      TRUE ~ "Other or unresolved"
     )
   ) %>%
-  group_by(Category) %>%
-  summarise(Count = n()) %>%
-  mutate(Percentage = Count / sum(Count) * 100)
+  count(Broad_Class, name = "Count") %>%
+  mutate(Percentage = 100 * Count / sum(Count))
 
-fig15 <- novel_shared %>%
-  ggplot(aes(x = "", y = Count, fill = Category)) +
-  geom_bar(stat = "identity", width = 1) +
-  coord_polar("y", start = 0) +
-  scale_fill_manual(values = c("Shared (Ancestral)" = "#4D4D4D",
-                               "Introduced" = "#FF7F00",
-                               "Novel (De novo)" = "#E41A1C",
-                               "Other" = "#E5E5E5")) +
-  geom_text(aes(label = paste0(round(Percentage, 1), "%")), 
-            position = position_stack(vjust = 0.5), size = 4) +
-  labs(title = "O", subtitle = "Novel vs Shared SVs") +
-  theme_void() +
-  theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
-        plot.subtitle = element_text(hjust = 0.5, size = 10))
+fig15 <- broad_origin %>%
+  ggplot(aes(x = "", y = Count, fill = Broad_Class)) +
+  geom_col(width = 1, color = "white", linewidth = 0.4) +
+  coord_polar(theta = "y") +
+  geom_text(
+    aes(label = paste0(round(Percentage, 1), "%")),
+    position = position_stack(vjust = 0.5),
+    size = 3
+  ) +
+  scale_fill_brewer(palette = "Set2") +
+  labs(
+    title = "O",
+    subtitle = "Broad SV-origin composition",
+    fill = NULL
+  ) +
+  theme_void(base_family = "sans") +
+  theme(
+    plot.title = element_text(size = 14, face = "plain", hjust = 0),
+    plot.subtitle = element_text(size = 10, face = "plain", hjust = 0),
+    legend.position = "bottom"
+  )
 
-ggsave("SV_Figures/Figure15_Novel_vs_Shared.png", fig15, width = 6, height = 6, dpi = 300, bg = "white")
+save_plot(fig15, "Figure15_Broad_SV_Origin", 6.5, 6)
 
-# -------------------------------------------------------------------------
-# Figure 16: BND Breakpoint Distribution by Chromosome
-# -------------------------------------------------------------------------
-bnd_data <- sv_data %>%
+# Figure 16: BND counts by chromosome
+fig16 <- sv_data %>%
   filter(sv_type == "BND") %>%
-  group_by(CHR) %>%
-  summarise(Count = n())
-
-fig16 <- bnd_data %>%
+  count(CHR, name = "Count") %>%
   ggplot(aes(x = CHR, y = Count, fill = CHR)) +
-  geom_bar(stat = "identity", width = 0.7) +
-  geom_text(aes(label = Count), vjust = -0.5, size = 3.5) +
-  scale_fill_viridis_d() +
-  labs(title = "P", subtitle = "BND Breakpoint Distribution by Chromosome",
-       x = "Chromosome", y = "Number of BND Events") +
-  theme_publication() +
-  theme(legend.position = "none")
+  geom_col(width = 0.72, color = "black", linewidth = 0.25) +
+  geom_text(aes(label = Count), vjust = -0.5, size = 3) +
+  scale_fill_viridis_d(guide = "none") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.12))) +
+  labs(
+    title = "P",
+    subtitle = "BND breakpoint counts by chromosome",
+    x = "Chromosome",
+    y = "Number of BND events"
+  )
 
-ggsave("SV_Figures/Figure16_BND_Distribution.png", fig16, width = 10, height = 6, dpi = 300, bg = "white")
+save_plot(fig16, "Figure16_BND_by_Chromosome", 9, 5.5)
 
-# -------------------------------------------------------------------------
-# Figure 17: SV Size Correlation with Type
-# -------------------------------------------------------------------------
+# Figure 17: SV size by type
+plot_sample_size <- min(5000L, nrow(sv_data))
+
 fig17 <- sv_data %>%
-  sample_n(min(5000, nrow(sv_data))) %>%
-  ggplot(aes(x = sv_type, y = log10(sv_size + 1), fill = sv_type)) +
-  geom_boxplot(alpha = 0.7, outlier.shape = NA) +
-  geom_jitter(alpha = 0.3, size = 0.5) +
-  scale_fill_manual(values = c("INDEL" = "#4D4D4D", "BND" = "#E41A1C", "OTHER" = "#377EB8")) +
-  labs(title = "Q", subtitle = "SV Size Distribution by Type",
-       x = "SV Type", y = expression(log[10]("SV Size (bp) + 1"))) +
-  theme_publication()
+  slice_sample(n = plot_sample_size) %>%
+  filter(sv_size > 0) %>%
+  ggplot(aes(x = sv_type, y = log10(sv_size), fill = sv_type)) +
+  geom_boxplot(
+    alpha = 0.75,
+    outlier.shape = NA,
+    color = "black",
+    linewidth = 0.25
+  ) +
+  geom_jitter(width = 0.18, alpha = 0.2, size = 0.45) +
+  scale_fill_brewer(palette = "Set2", guide = "none") +
+  labs(
+    title = "Q",
+    subtitle = "SV size distributions by variant type",
+    x = "SV type",
+    y = expression(log[10]("SV size (bp)"))
+  )
 
-ggsave("SV_Figures/Figure17_Size_by_Type.png", fig17, width = 8, height = 6, dpi = 300, bg = "white")
+save_plot(fig17, "Figure17_SV_Size_by_Type", 8, 5.5)
 
-# -------------------------------------------------------------------------
-# Figure 18: Haplotype Transmission Sankey Diagram (Simplified)
-# -------------------------------------------------------------------------
-sankey_data <- sv_data %>%
-  filter(!is.na(haplotype_WA1) & !is.na(haplotype_CA1)) %>%
-  group_by(haplotype_WA1, haplotype_CA1) %>%
-  summarise(Count = n(), .groups = "drop")
+# Figure 18: Genotype-state transitions
+transition_long <- map_dfr(
+  transition_pairs,
+  function(pair) {
+    from_sample <- pair[1]
+    to_sample <- pair[2]
 
-fig18 <- sankey_data %>%
-  ggplot(aes(x = "WA1", y = Count, fill = haplotype_WA1)) +
-  geom_bar(stat = "identity", width = 0.5) +
-  geom_bar(aes(x = "CA1", y = Count, fill = haplotype_CA1), stat = "identity", width = 0.5) +
-  geom_curve(data = sankey_data, 
-             aes(x = 1, xend = 2, y = cumsum(Count), yend = cumsum(Count)), 
-             curvature = 0.3, alpha = 0.5) +
-  scale_fill_manual(values = c("hap1" = "#E41A1C", "hap2" = "#377EB8")) +
-  labs(title = "R", subtitle = "Haplotype Transmission from WA1 to CA1",
-       x = "Individual", y = "Number of SVs", fill = "Haplotype") +
-  theme_publication() +
-  theme(axis.text.x = element_text(face = "bold"))
-
-ggsave("SV_Figures/Figure18_Haplotype_Transmission.png", fig18, width = 8, height = 6, dpi = 300, bg = "white")
-
-# -------------------------------------------------------------------------
-# Figure 19: Introduction Event Timeline
-# -------------------------------------------------------------------------
-timeline_data <- data.frame(
-  Generation = c("G1", "G1.5", "G2", "G3", "G4", "G5"),
-  Event = c("Founders", "WA1 Introduction", "PA1 Birth", "GA1 Birth", 
-            "EA5 Birth + WA2 Introduction", "CA1 Birth"),
-  SVs_Introduced = c(0, 
-                     sum(sv_data$introduced_via_WA1, na.rm = TRUE),
-                     sum(sv_data$de_novo_G2, na.rm = TRUE),
-                     sum(sv_data$de_novo_G3, na.rm = TRUE),
-                     sum(sv_data$introduced_via_WA2, na.rm = TRUE) + sum(sv_data$de_novo_G4, na.rm = TRUE),
-                     sum(sv_data$de_novo_G5, na.rm = TRUE))
+    tibble(
+      From_State = sv_data[[paste0(from_sample, "_state")]],
+      To_State = sv_data[[paste0(to_sample, "_state")]]
+    ) %>%
+      filter(!is.na(From_State), !is.na(To_State)) %>%
+      count(From_State, To_State, name = "Count") %>%
+      mutate(Transition = paste(from_sample, to_sample, sep = " -> "))
+  }
 )
+
+fig18 <- transition_long %>%
+  ggplot(aes(x = From_State, y = To_State, fill = Count)) +
+  geom_tile(color = "white", linewidth = 0.4) +
+  geom_text(aes(label = Count), size = 2.8) +
+  facet_wrap(~Transition) +
+  scale_fill_viridis_c() +
+  labs(
+    title = "R",
+    subtitle = "Diploid genotype-state transitions across pedigree links",
+    x = "Parent or preceding state",
+    y = "Offspring or succeeding state",
+    fill = "Count"
+  )
+
+save_plot(fig18, "Figure18_Genotype_State_Transitions", 11, 7)
+
+# Figure 19: Timeline of introduced and putative new SVs
+timeline_data <- tribble(
+  ~generation, ~event, ~SV_Count,
+  "G0", "Founder-derived SVs", sum(sv_data$founder_derived, na.rm = TRUE),
+  "G1", "Introduced or retained in SU", sum(sv_data$introduced_via_SU, na.rm = TRUE),
+  "G2", "Putative new in PDYPT", sum(sv_data$putative_new_PDYPT, na.rm = TRUE),
+  "G2", "Introduced via BJ25", sum(sv_data$introduced_via_BJ25, na.rm = TRUE),
+  "G3", "Putative new in Z1_3", sum(sv_data$putative_new_Z1_3, na.rm = TRUE),
+  "G4", "Putative new in ZYP7", sum(sv_data$putative_new_ZYP7, na.rm = TRUE),
+  "G4", "Putative new in ZYP9", sum(sv_data$putative_new_ZYP9, na.rm = TRUE),
+  "G4", "Introduced via MYQL", sum(sv_data$introduced_via_MYQL, na.rm = TRUE),
+  "G5", "Putative new in ZYP27", sum(sv_data$putative_new_ZYP27, na.rm = TRUE)
+) %>%
+  mutate(
+    generation = factor(
+      generation,
+      levels = c("G0", "G1", "G2", "G3", "G4", "G5")
+    )
+  )
 
 fig19 <- timeline_data %>%
-  ggplot(aes(x = factor(Generation, levels = Generation), y = SVs_Introduced, 
-             fill = factor(Generation, levels = Generation))) +
-  geom_bar(stat = "identity", width = 0.7) +
-  geom_text(aes(label = SVs_Introduced), vjust = -0.5, size = 4, fontface = "bold") +
-  scale_fill_viridis_d(guide = "none") +
-  labs(title = "S", subtitle = "Introduction and De Novo Events Timeline",
-       x = "Generation", y = "Number of New SVs") +
-  theme_publication()
+  ggplot(aes(x = generation, y = SV_Count, fill = event)) +
+  geom_col(position = "stack", width = 0.72) +
+  scale_fill_brewer(palette = "Set3") +
+  labs(
+    title = "S",
+    subtitle = "Founder, introduced and putative lineage-specific SV events from G0 to G5",
+    x = "Generation",
+    y = "Number of SVs",
+    fill = "Event"
+  ) +
+  theme(legend.position = "right")
 
-ggsave("SV_Figures/Figure19_Event_Timeline.png", fig19, width = 10, height = 6, dpi = 300, bg = "white")
+save_plot(fig19, "Figure19_SV_Event_Timeline", 11, 6)
 
-# -------------------------------------------------------------------------
-# Figure 20: Summary Dashboard (Combined)
-# -------------------------------------------------------------------------
-summary_stats <- data.frame(
-  Metric = c("Total SVs", "Ancestral SVs", "Introduced SVs", "De Novo SVs",
-             "BND Events", "INDEL Events", "Average SV Size (bp)", "Median SV Size (bp)"),
-  Value = c(nrow(sv_data),
-            sum(grepl("Ancestral", sv_data$sv_class)),
-            sum(grepl("Introduced", sv_data$sv_class)),
-            sum(grepl("De novo", sv_data$sv_class)),
-            sum(sv_data$sv_type == "BND"),
-            sum(sv_data$sv_type == "INDEL"),
-            round(mean(sv_data$sv_size), 0),
-            round(median(sv_data$sv_size), 0))
+# Figure 20: Analysis summary table
+summary_stats <- tibble(
+  Metric = c(
+    "Total SVs",
+    "Founder-derived SVs",
+    "Donor-derived SVs",
+    "Putative new SVs",
+    "BND events",
+    "Median SV size (bp)"
+  ),
+  Value = c(
+    nrow(sv_data),
+    sum(sv_data$sv_class == "Founder-derived", na.rm = TRUE),
+    sum(str_detect(as.character(sv_data$sv_class), "^Introduced via"), na.rm = TRUE),
+    sum(str_detect(as.character(sv_data$sv_class), "^Putative new"), na.rm = TRUE),
+    sum(sv_data$sv_type == "BND", na.rm = TRUE),
+    round(median(sv_data$sv_size, na.rm = TRUE))
+  )
 )
 
-fig20_table <- tableGrob(summary_stats, rows = NULL, theme = ttheme_minimal(
-  core = list(fg_params = list(fontsize = 10, hjust = 0, x = 0.1)),
-  colhead = list(fg_params = list(fontsize = 11, fontface = "bold"))
-))
+fig20 <- tableGrob(
+  summary_stats,
+  rows = NULL,
+  theme = ttheme_minimal(
+    core = list(
+      fg_params = list(fontsize = 10, hjust = 0, x = 0.05)
+    ),
+    colhead = list(
+      fg_params = list(fontsize = 10, fontface = "plain")
+    )
+  )
+)
 
-fig20_title <- textGrob("T", gp = gpar(fontsize = 16, fontface = "bold"), x = 0.05, just = "left")
-fig20_subtitle <- textGrob("SV Analysis Summary Statistics", 
-                           gp = gpar(fontsize = 12), x = 0.05, just = "left")
+ggsave(
+  filename = file.path(figure_dir, "Figure20_Analysis_Summary.png"),
+  plot = fig20,
+  width = 8,
+  height = 5,
+  units = "in",
+  dpi = 600,
+  bg = "white"
+)
 
-fig20 <- arrangeGrob(fig20_title, fig20_subtitle, fig20_table, 
-                     nrow = 3, heights = c(0.1, 0.1, 0.8))
+ggsave(
+  filename = file.path(figure_dir, "Figure20_Analysis_Summary.pdf"),
+  plot = fig20,
+  width = 8,
+  height = 5,
+  units = "in",
+  bg = "white"
+)
 
-ggsave("SV_Figures/Figure20_Summary_Dashboard.png", fig20, width = 10, height = 6, dpi = 300, bg = "white")
-ggsave("SV_Figures/Figure20_Summary_Dashboard.pdf", fig20, width = 10, height = 6)
+# -----------------------------------------------------------------------------
+# 11. Combined multi-page PDF
+# -----------------------------------------------------------------------------
 
-# ============================================================================
-# 9. COMBINE ALL FIGURES INTO MAIN PDF
-# ============================================================================
+all_plots <- list(
+  fig1, fig2, fig3, fig4, fig5,
+  fig6, fig7, fig8, fig9, fig10,
+  fig11, fig12, fig13, fig14, fig15,
+  fig16, fig17, fig18, fig19
+)
 
-cat("\nCombining all figures into main PDF...\n")
+combined_pages <- marrangeGrob(
+  grobs = all_plots,
+  nrow = 2,
+  ncol = 2,
+  top = NULL
+)
 
-pdf("SV_Figures/All_20_Figures_Combined.pdf", width = 12, height = 10, onefile = TRUE)
-grid.arrange(fig1, fig2, fig3, fig4, fig5, fig6, fig7, fig8, fig9, fig10,
-             fig11, fig12, fig13, fig14, fig15, fig16, fig17, fig18, fig19, fig20,
-             ncol = 2, nrow = 10)
-dev.off()
+ggsave(
+  filename = file.path(figure_dir, "All_Figures_Combined.pdf"),
+  plot = combined_pages,
+  width = 14,
+  height = 10,
+  units = "in"
+)
 
-# ============================================================================
-# 10. EXPORT RESULTS
-# ============================================================================
+# -----------------------------------------------------------------------------
+# 12. Export complete results
+# -----------------------------------------------------------------------------
 
-cat("\nExporting results...\n")
+result_columns <- c(
+  "CHR", "POS", "TYPE", "LEN", "ORIGIN",
+  "sv_class", "sv_type", "sv_size", "size_category",
+  grep(
+    "_carrier$|_genotype$|^introduced_via_|^putative_new_|^founder_derived$|^lost_founder_variant$",
+    names(sv_data),
+    value = TRUE
+  )
+)
 
-# Complete results table
 complete_results <- sv_data %>%
-  select(CHR, POS, TYPE, LEN, ORIGIN, sv_class, sv_type, size_category,
-         contains("carrier"), contains("haplotype"),
-         starts_with("de_novo"), starts_with("introduced"))
+  select(all_of(unique(result_columns)))
 
-write.csv(complete_results, "SV_Tables/Complete_SV_Results.csv", row.names = FALSE)
+write.csv(
+  complete_results,
+  file.path(table_dir, "Complete_SV_Results.csv"),
+  row.names = FALSE
+)
 
-# De novo summary table
-denovo_summary <- sv_data %>%
-  filter(grepl("De novo", sv_class)) %>%
-  group_by(sv_class, CHR) %>%
-  summarise(Count = n(), .groups = "drop") %>%
-  pivot_wider(names_from = CHR, values_from = Count, values_fill = 0)
+write.csv(
+  introduction_summary,
+  file.path(table_dir, "Table8_Donor_Introductions.csv"),
+  row.names = FALSE
+)
 
-write.csv(denovo_summary, "SV_Tables/Table_DeNovo_Summary.csv", row.names = FALSE)
+write.csv(
+  putative_new_summary,
+  file.path(table_dir, "Table9_Putative_New_SVs.csv"),
+  row.names = FALSE
+)
 
-# Introduction events table
-intro_summary <- sv_data %>%
-  filter(grepl("Introduced", sv_class)) %>%
-  group_by(sv_class, CHR) %>%
-  summarise(Count = n(), .groups = "drop") %>%
-  pivot_wider(names_from = CHR, values_from = Count, values_fill = 0)
+write.csv(
+  timeline_data,
+  file.path(table_dir, "Table10_SV_Event_Timeline.csv"),
+  row.names = FALSE
+)
 
-write.csv(intro_summary, "SV_Tables/Table_Introduction_Summary.csv", row.names = FALSE)
+capture.output(
+  sessionInfo(),
+  file = file.path(table_dir, "R_Session_Info.txt")
+)
 
-# Haplotype conservation table
-write.csv(haplotype_stats, "SV_Tables/Table_Haplotype_Conservation.csv", row.names = FALSE)
+# -----------------------------------------------------------------------------
+# 13. Final report
+# -----------------------------------------------------------------------------
 
-# ============================================================================
-# 11. FINAL SUMMARY REPORT
-# ============================================================================
+report_file <- file.path(table_dir, "Complete_Analysis_Report.txt")
 
-sink("SV_Tables/Complete_Analysis_Report.txt")
+sink(report_file)
 
-cat("========================================\n")
-cat("SV ANALYSIS COMPLETE REPORT\n")
-cat("========================================\n\n")
-cat(paste("Analysis Date:", Sys.time(), "\n"))
-cat(paste("Total SVs Analyzed:", nrow(sv_data), "\n\n"))
+cat("STRUCTURAL-VARIANT ANALYSIS REPORT\n")
+cat("==================================\n\n")
+cat("Analysis date:", format(Sys.time()), "\n")
+cat("Input file:", input_file, "\n")
+cat("SVs analysed:", nrow(sv_data), "\n")
+cat("Accessions:", paste(sample_names, collapse = ", "), "\n\n")
 
-cat("========================================\n")
-cat("KEY FINDINGS\n")
-cat("========================================\n\n")
+cat("SV classification\n")
+cat("-----------------\n")
+print(classification_summary, row.names = FALSE)
 
-cat("1. SV Classification:\n")
-classification_summary %>%
-  mutate(Entry = paste0("   • ", sv_class, ": ", Count, " (", Percentage, "%)")) %>%
-  pull(Entry) %>%
-  cat(sep = "\n")
+cat("\nSV type distribution\n")
+cat("--------------------\n")
+print(sv_type_summary, row.names = FALSE)
 
-cat("\n\n2. SV Type Distribution:\n")
-sv_type_summary %>%
-  mutate(Entry = paste0("   • ", sv_type, ": ", Count, " (", Percentage, "%)")) %>%
-  pull(Entry) %>%
-  cat(sep = "\n")
+cat("\nSV counts by generation\n")
+cat("-----------------------\n")
+print(generation_sv_counts, row.names = FALSE)
 
-cat("\n\n3. Introduction Events:\n")
-cat(paste0("   • Via WA1 (G1.5): ", sum(sv_data$introduced_via_WA1, na.rm = TRUE), " SVs\n"))
-cat(paste0("   • Via EA3 (G2): ", sum(sv_data$introduced_via_EA3, na.rm = TRUE), " SVs\n"))
-cat(paste0("   • Via WA2 (G4): ", sum(sv_data$introduced_via_WA2, na.rm = TRUE), " SVs\n"))
+cat("\nGenotype-state conservation\n")
+cat("---------------------------\n")
+print(haplotype_stats, row.names = FALSE)
 
-cat("\n4. De Novo Events by Generation:\n")
-denovo_stats %>%
-  mutate(Entry = paste0("   • ", Generation, ": ", Count, " SVs")) %>%
-  pull(Entry) %>%
-  cat(sep = "\n")
-
-cat("\n5. Haplotype Conservation:\n")
-haplotype_stats %>%
-  mutate(Entry = paste0("   • ", Transition, ": ", Count, " SVs")) %>%
-  pull(Entry) %>%
-  cat(sep = "\n")
-
-cat("\n6. Largest SVs:\n")
-sv_data %>%
-  arrange(desc(sv_size)) %>%
-  head(10) %>%
-  select(CHR, POS, TYPE, sv_size, sv_class) %>%
-  mutate(Entry = paste0("   • ", CHR, ":", POS, " - ", TYPE, " (", 
-                        format(sv_size, big.mark = ","), "bp) - ", sv_class)) %>%
-  pull(Entry) %>%
-  cat(sep = "\n")
-
-cat("\n\n========================================\n")
-cat("OUTPUT FILES GENERATED\n")
-cat("========================================\n")
-cat("Figures (20 total):\n")
-cat("   • SV_Figures/Figure1_Classification_Overview.png\n")
-cat("   • SV_Figures/Figure2_SV_Types_By_Generation.png\n")
-cat("   • SV_Figures/Figure3_Chromosome_Distribution.png\n")
-cat("   • SV_Figures/Figure4_DeNovo_By_Chromosome.png\n")
-cat("   • SV_Figures/Figure5_Size_Distribution.png\n")
-cat("   • SV_Figures/Figure6_Size_Ridge.png\n")
-cat("   • SV_Figures/Figure7_Size_Heatmap.png\n")
-cat("   • SV_Figures/Figure8_Haplotype_Conservation.png\n")
-cat("   • SV_Figures/Figure9_Introduction_Events.png\n")
-cat("   • SV_Figures/Figure10_DeNovo_By_Generation.png\n")
-cat("   • SV_Figures/Figure11_BND_vs_INDEL.png\n")
-cat("   • SV_Figures/Figure12_Relative_Density.png\n")
-cat("   • SV_Figures/Figure13_Size_Violin.png\n")
-cat("   • SV_Figures/Figure14_Cumulative_Count.png\n")
-cat("   • SV_Figures/Figure15_Novel_vs_Shared.png\n")
-cat("   • SV_Figures/Figure16_BND_Distribution.png\n")
-cat("   • SV_Figures/Figure17_Size_by_Type.png\n")
-cat("   • SV_Figures/Figure18_Haplotype_Transmission.png\n")
-cat("   • SV_Figures/Figure19_Event_Timeline.png\n")
-cat("   • SV_Figures/Figure20_Summary_Dashboard.png\n")
-cat("   • SV_Figures/All_20_Figures_Combined.pdf\n\n")
-
-cat("Tables:\n")
-cat("   • SV_Tables/Table1_SV_Classification_Summary.csv\n")
-cat("   • SV_Tables/Table2_SV_Type_Distribution.csv\n")
-cat("   • SV_Tables/Table3_Size_Distribution_by_Class.csv\n")
-cat("   • SV_Tables/Table4_Generation_Counts.csv\n")
-cat("   • SV_Tables/Table_DeNovo_Summary.csv\n")
-cat("   • SV_Tables/Table_Introduction_Summary.csv\n")
-cat("   • SV_Tables/Table_Haplotype_Conservation.csv\n")
-cat("   • SV_Tables/Complete_SV_Results.csv\n")
-cat("   • SV_Tables/Complete_Analysis_Report.txt\n")
-
-cat("\n========================================\n")
-cat("ANALYSIS COMPLETE!\n")
-cat("========================================\n")
+cat("\nOutput directories\n")
+cat("------------------\n")
+cat("Figures:", figure_dir, "\n")
+cat("Tables:", table_dir, "\n")
 
 sink()
 
-cat("\n========================================\n")
-cat("ANALYSIS COMPLETE!\n")
-cat("========================================\n")
-cat("Output saved to:\n")
-cat("  - SV_Figures/ (20 figures + combined PDF)\n")
-cat("  - SV_Tables/ (8 tables + complete report)\n")
-cat("========================================\n")
-
+cat("\nAnalysis complete.\n")
+cat("Figures:", figure_dir, "\n")
+cat("Tables:", table_dir, "\n")
