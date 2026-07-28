@@ -1,5 +1,22 @@
 #### Authors:  Abebe Misganaw Gedamu 
-#### Phenotypic Analysis
+
+# Phenotypic analysis of 14 peach accessions
+#
+# This script:
+# 1. imports replicated phenotype observations;
+# 2. fits trait-specific ANOVA models with accession and replicate effects;
+# 3. performs Tukey's HSD multiple comparisons;
+# 4. generates compact-letter displays;
+# 5. creates publication-quality figures; and
+# 6. exports accession-level summary statistics.
+#
+# Input:
+#   data/abe.xlsx
+#
+# Output:
+#   results/figures/
+#   results/tables/
+
 library(tidyverse)
 library(ggthemes)
 library(multcompView)
