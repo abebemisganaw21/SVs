@@ -1,0 +1,477 @@
+# ============================================================================
+# COMPLETE SV ANALYSIS PIPELINE - PEACH 5-GENERATION PEDIGREE
+# ============================================================================
+# 
+# SPECIES:     Prunus persica 
+# 
+# PEDIGREE STRUCTURE:
+#   Founders: KHRLG × BT
+#        ↓ (1 meiosis)
+#   G1: F1 (inferred, unsampled)
+#        ↓ (1 meiosis) × introduced SU
+#   G2: PDYPT
+#        ↓ (1 meiosis) × introduced BJ25
+#   G3: Z1_3
+#        ↓ (1 meiosis)
+#   G4: ZYP7
+#        ↓ (1 meiosis) × introduced MYQL
+#   G5: ZYP27 (proband)
+#Author : Abebe Misganaw 
+# ============================================================================
+
+# ============================================================================
+# 1. LOAD LIBRARIES
+# ============================================================================
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(ggplot2)
+  library(gridExtra)
+  library(grid)
+  library(RColorBrewer)
+  library(scales)
+  library(ggpubr)
+  library(ggridges)
+  library(viridis)
+  library(patchwork)
+  library(openxlsx)
+  library(broom)
+  library(ggrepel)
+})
+
+# Set seed for reproducibility
+set.seed(42)
+
+# Create output directories
+dir.create("SV_Figures", showWarnings = FALSE)
+dir.create("SV_Tables", showWarnings = FALSE)
+dir.create("SV_Excel", showWarnings = FALSE)
+
+# ============================================================================
+# 2. Figure
+# ============================================================================
+
+figure <- function(base_size = 10) {
+  theme_classic(base_size = base_size) +
+    theme(
+      plot.title = element_text(size = 12, face = "bold", hjust = 0.5, margin = margin(b = 8)),
+      plot.subtitle = element_text(size = 10, hjust = 0.5, color = "gray40"),
+      axis.title = element_text(size = 11, face = "bold"),
+      axis.text = element_text(size = 9, color = "black"),
+      axis.line = element_line(linewidth = 0.4),
+      legend.title = element_text(size = 10, face = "bold"),
+      legend.text = element_text(size = 9),
+      legend.position = "bottom",
+      legend.key.size = unit(0.4, "cm"),
+      strip.background = element_rect(fill = "gray95", color = NA),
+      strip.text = element_text(size = 10, face = "bold"),
+      plot.margin = margin(10, 10, 10, 10)
+    )
+}
+
+theme_set(figure())
+
+# ============================================================================
+# 3. COLOR PALETTES
+# ============================================================================
+
+# Origin color palette
+origin_colors <- c(
+  "Ancestral (Transmitted to G5)" = "#4D4D4D",
+  "Ancestral (Lost before G5)" = "#A6A6A6",
+  "Ancestral (Lost before G4)" = "#BFBFBF",
+  "Ancestral (Lost before G3)" = "#D9D9D9",
+  "Ancestral (Founder only)" = "#F0F0F0",
+  "Introduced (SU)" = "#FF7F00",
+  "Introduced (BJ25)" = "#A65628",
+  "Introduced (MYQL)" = "#F781BF",
+  "Inferred (F1)" = "#984EA3",
+  "De novo G3 (Z1_3)" = "#4DAF4A",
+  "De novo G4 (ZYP7)" = "#377EB8",
+  "De novo G5 (ZYP27)" = "#E41A1C",
+  "Private (F1)" = "#B3B3B3",
+  "Private (SU)" = "#B3B3B3",
+  "Private (BJ25)" = "#B3B3B3",
+  "Private (MYQL)" = "#B3B3B3"
+)
+
+# Simplify for main figures
+main_origin_colors <- c(
+  "Ancestral (Transmitted)" = "#4D4D4D",
+  "Ancestral (Lost)" = "#A6A6A6",
+  "Introduced" = "#FF7F00",
+  "Inferred" = "#984EA3",
+  "De novo" = "#E41A1C",
+  "Private" = "#B3B3B3"
+)
+
+# ============================================================================
+# 4. READ AND PREPARE DATA
+# ============================================================================
+
+cat("========================================\n")
+cat("PEACH SV ANALYSIS PIPELINE\n")
+cat("5-Generation Pedigree Analysis\n")
+cat("========================================\n\n")
+
+# Read the classified data
+sv_data <- read.delim("modified.tsv", 
+                      stringsAsFactors = FALSE)
+
+cat(paste("Total variants loaded:", nrow(sv_data), "\n"))
+cat(paste("Columns:", paste(names(sv_data), collapse=", "), "\n\n"))
+
+# Filter to main chromosomes
+sv_data <- sv_data %>% filter(grepl("^Pp0[1-8]$", CHR))
+cat(paste("After filtering to main chromosomes:", nrow(sv_data), "variants\n"))
+
+# Create simplified categories
+sv_data <- sv_data %>%
+  mutate(
+    # Simplified origin for main figures
+    origin_simple = case_when(
+      grepl("^Ancestral.*Transmitted", ORIGIN) ~ "Ancestral (Transmitted)",
+      grepl("^Ancestral.*Lost", ORIGIN) ~ "Ancestral (Lost)",
+      grepl("^Ancestral.*Founder only", ORIGIN) ~ "Ancestral (Lost)",
+      grepl("^Introduced", ORIGIN) ~ "Introduced",
+      grepl("^Inferred", ORIGIN) ~ "Inferred",
+      grepl("^De novo", ORIGIN) ~ "De novo",
+      grepl("^Private", ORIGIN) ~ "Private",
+      TRUE ~ "Other"
+    ),
+    
+    # Generation
+    generation = case_when(
+      grepl("G5", ORIGIN) ~ "G5 (ZYP27)",
+      grepl("G4", ORIGIN) ~ "G4 (ZYP7)",
+      grepl("G3", ORIGIN) ~ "G3 (Z1_3)",
+      grepl("G2", ORIGIN) ~ "G2 (PDYPT)",
+      grepl("Introduced.*MYQL", ORIGIN) ~ "G5 (ZYP27)",
+      grepl("Introduced.*BJ25", ORIGIN) ~ "G3 (Z1_3)",
+      grepl("Introduced.*SU", ORIGIN) ~ "G2 (PDYPT)",
+      grepl("Inferred", ORIGIN) ~ "G2 (PDYPT)",
+      grepl("Ancestral.*Transmitted", ORIGIN) ~ "All",
+      TRUE ~ "Other"
+    ),
+    
+    # SV type
+    sv_type = TYPE,
+    sv_size = abs(LEN),
+    
+    # Size category
+    size_category = case_when(
+      sv_size < 100 ~ "Small (<100bp)",
+      sv_size < 1000 ~ "Medium (100-1000bp)",
+      sv_size < 10000 ~ "Large (1-10kb)",
+      TRUE ~ "Very large (>10kb)"
+    )
+  )
+
+# ============================================================================
+# 5. SUMMARY STATISTICS
+# ============================================================================
+
+cat("\n=== CLASSIFICATION SUMMARY ===\n")
+class_summary <- sv_data %>%
+  group_by(ORIGIN) %>%
+  summarise(Count = n(), Percentage = round(n()/nrow(sv_data)*100, 2)) %>%
+  arrange(desc(Count))
+
+print(class_summary)
+
+# Simplified summary
+cat("\n=== SIMPLIFIED ORIGIN SUMMARY ===\n")
+simplified_summary <- sv_data %>%
+  group_by(origin_simple) %>%
+  summarise(Count = n(), Percentage = round(n()/nrow(sv_data)*100, 2)) %>%
+  arrange(desc(Count))
+
+print(simplified_summary)
+
+# ============================================================================
+# 6. FIGURE 1: ORIGIN CLASSIFICATION BAR PLOT
+# ============================================================================
+
+cat("\nGenerating Figure 1: Origin Classification...\n")
+
+fig1 <- simplified_summary %>%
+  filter(origin_simple != "Other") %>%
+  ggplot(aes(x = reorder(origin_simple, Count), y = Count, fill = origin_simple)) +
+  geom_bar(stat = "identity", width = 0.7, alpha = 0.85) +
+  geom_text(aes(label = paste0(Count, " (", Percentage, "%)")), 
+            hjust = -0.1, size = 3.5) +
+  coord_flip() +
+  scale_fill_manual(values = main_origin_colors, guide = "none") +
+  labs(title = "A",
+       x = "", y = "Number of Structural Variants") +
+  theme_nature() +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15)))
+
+ggsave("SV_Figures/Figure1_Origin_Classification.png", fig1, 
+       width = 8, height = 5, dpi = 300, bg = "white")
+
+# ============================================================================
+# 7. FIGURE 2: DE NOVO MUTATION RATES
+# ============================================================================
+
+cat("\nGenerating Figure 2: De Novo Mutation Rates...\n")
+
+# Callable genome size (bp)
+callable_genome_bp <- 222191881
+
+# Extract de novo counts by generation
+denovo_data <- sv_data %>%
+  filter(grepl("De novo", ORIGIN)) %>%
+  mutate(
+    generation_num = case_when(
+      grepl("G3", ORIGIN) ~ 3,
+      grepl("G4", ORIGIN) ~ 4,
+      grepl("G5", ORIGIN) ~ 5,
+      TRUE ~ NA_real_
+    ),
+    transmission = case_when(
+      grepl("Transmitted", ORIGIN) ~ "Transmitted to G5",
+      grepl("Lost", ORIGIN) ~ "Lost",
+      grepl("only", ORIGIN) ~ "Not transmitted",
+      TRUE ~ "Unknown"
+    )
+  ) %>%
+  filter(!is.na(generation_num))
+
+# Calculate rates
+denovo_rates <- denovo_data %>%
+  group_by(generation_num, transmission) %>%
+  summarise(Count = n(), .groups = "drop") %>%
+  mutate(
+    Rate_per_BP = Count / callable_genome_bp,
+    Rate_per_Gb = Rate_per_BP * 1e9,
+    Generation = paste0("G", generation_num)
+  )
+
+# Plot de novo counts by generation
+fig2a <- denovo_data %>%
+  group_by(generation_num, transmission) %>%
+  summarise(Count = n(), .groups = "drop") %>%
+  ggplot(aes(x = factor(generation_num), y = Count, fill = transmission)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.7, alpha = 0.85) +
+  geom_text(aes(label = Count), position = position_dodge(width = 0.7), 
+            vjust = -0.5, size = 3.5) +
+  scale_fill_manual(values = c("Transmitted to G5" = "#4DAF4A", 
+                               "Lost" = "#E41A1C",
+                               "Not transmitted" = "#377EB8")) +
+  labs(title = "B",
+       x = "Generation", y = "Number of De Novo SVs", fill = "Status") +
+  theme_nature() +
+  theme(legend.position = "bottom")
+
+# Plot mutation rates
+fig2b <- denovo_rates %>%
+  ggplot(aes(x = Generation, y = Rate_per_Gb, fill = transmission)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.7, alpha = 0.85) +
+  geom_text(aes(label = sprintf("%.2f", Rate_per_Gb)), 
+            position = position_dodge(width = 0.7), vjust = -0.5, size = 3) +
+  scale_fill_manual(values = c("Transmitted to G5" = "#4DAF4A", 
+                               "Lost" = "#E41A1C",
+                               "Not transmitted" = "#377EB8")) +
+  labs(title = "C",
+       x = "Generation", y = "De Novo SV Rate (×10⁻⁹ per bp)", fill = "Status") +
+  theme_nature() +
+  theme(legend.position = "bottom")
+
+# Combine
+fig2 <- fig2a + fig2b + plot_layout(widths = c(1, 1))
+ggsave("SV_Figures/Figure2_DeNovo_Rates.png", fig2, 
+       width = 10, height = 5, dpi = 300, bg = "white")
+
+# ============================================================================
+# 8. FIGURE 3: SV TYPES BY ORIGIN
+# ============================================================================
+
+cat("\nGenerating Figure 3: SV Types by Origin...\n")
+
+fig3 <- sv_data %>%
+  filter(origin_simple %in% c("Ancestral (Transmitted)", "Introduced", "De novo")) %>%
+  group_by(origin_simple, sv_type) %>%
+  summarise(Count = n(), .groups = "drop") %>%
+  ggplot(aes(x = origin_simple, y = Count, fill = sv_type)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7, alpha = 0.85) +
+  geom_text(aes(label = Count), position = position_stack(vjust = 0.5), size = 3) +
+  scale_fill_manual(values = c("DEL" = "#E41A1C", "DUP" = "#377EB8", 
+                               "INS" = "#4DAF4A", "TRA" = "#984EA3")) +
+  labs(title = "D",
+       x = "", y = "Number of SVs", fill = "SV Type") +
+  theme_nature() +
+  theme(legend.position = "bottom")
+
+ggsave("SV_Figures/Figure3_SV_Types.png", fig3, 
+       width = 6, height = 5, dpi = 300, bg = "white")
+
+# ============================================================================
+# 9. FIGURE 4: SIZE DISTRIBUTION
+# ============================================================================
+
+cat("\nGenerating Figure 4: Size Distribution...\n")
+
+fig4 <- sv_data %>%
+  filter(origin_simple %in% c("Ancestral (Transmitted)", "Introduced", "De novo"),
+         sv_size < 50000) %>%
+  ggplot(aes(x = log10(sv_size + 1), fill = origin_simple, color = origin_simple)) +
+  geom_density(alpha = 0.5, linewidth = 0.8) +
+  scale_fill_manual(values = main_origin_colors) +
+  scale_color_manual(values = main_origin_colors) +
+  labs(title = "E",
+       x = expression(log[10]("SV Size (bp) + 1")), 
+       y = "Density",
+       fill = "Origin", color = "Origin") +
+  theme_nature() +
+  theme(legend.position = "bottom")
+
+ggsave("SV_Figures/Figure4_Size_Distribution.png", fig4, 
+       width = 6, height = 4.5, dpi = 300, bg = "white")
+
+# ============================================================================
+# 10. FIGURE 5: PER-CHROMOSOME DISTRIBUTION
+# ============================================================================
+
+cat("\nGenerating Figure 5: Per-Chromosome Distribution...\n")
+
+# Extract chromosome number
+sv_data <- sv_data %>%
+  mutate(chrom_num = as.numeric(gsub("Pp0", "", CHR)))
+
+fig5 <- sv_data %>%
+  filter(origin_simple %in% c("Ancestral (Transmitted)", "Introduced", "De novo")) %>%
+  group_by(chrom_num, origin_simple) %>%
+  summarise(Count = n(), .groups = "drop") %>%
+  ggplot(aes(x = factor(chrom_num), y = Count, fill = origin_simple)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.7, alpha = 0.85) +
+  scale_fill_manual(values = main_origin_colors) +
+  labs(title = "F",
+       x = "Chromosome", y = "Number of SVs", fill = "Origin") +
+  theme_nature() +
+  theme(legend.position = "bottom")
+
+ggsave("SV_Figures/Figure5_Chromosome_Distribution.png", fig5, 
+       width = 8, height = 5, dpi = 300, bg = "white")
+
+# ============================================================================
+# 11. COMBINED FIGURE
+# ============================================================================
+
+cat("\nGenerating Combined Figure...\n")
+
+combined_figure <- (fig1 | fig2a) / (fig2b | fig3) / (fig4 | fig5) +
+  plot_annotation(
+    title = "Peach 5-Generation Pedigree Structural Variant Analysis",
+    subtitle = "Pedigree: KHRLG×BT → F1 → PDYPT → Z1_3 → ZYP7 → ZYP27",
+    theme = theme(
+      plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+      plot.subtitle = element_text(size = 10, hjust = 0.5, color = "gray40")
+    )
+  )
+
+ggsave("SV_Figures/Combined_Figure.png", combined_figure, 
+       width = 12, height = 14, dpi = 300, bg = "white")
+ggsave("SV_Figures/Combined_Figure.pdf", combined_figure, 
+       width = 12, height = 14)
+
+# ============================================================================
+# 12. EXPORT RESULTS
+# ============================================================================
+
+cat("\nExporting results...\n")
+
+# Create Excel workbook
+wb <- createWorkbook()
+
+# Add worksheets
+addWorksheet(wb, "Classification_Summary")
+addWorksheet(wb, "DeNovo_Rates")
+addWorksheet(wb, "SV_Type_Summary")
+addWorksheet(wb, "Chromosome_Summary")
+addWorksheet(wb, "Complete_Data")
+
+# Write data
+writeData(wb, "Classification_Summary", class_summary)
+writeData(wb, "DeNovo_Rates", denovo_rates)
+writeData(wb, "SV_Type_Summary", sv_data %>% group_by(sv_type, origin_simple) %>% summarise(Count = n()))
+writeData(wb, "Chromosome_Summary", sv_data %>% group_by(CHR, origin_simple) %>% summarise(Count = n()))
+writeData(wb, "Complete_Data", sv_data %>% select(CHR, POS, TYPE, LEN, ORIGIN, origin_simple, generation, sv_type, sv_size))
+
+# Style
+header_style <- createStyle(fontSize = 11, fontColour = "white", 
+                            fgFill = "#4F81BD", halign = "center",
+                            textDecoration = "bold")
+for(sheet in names(wb)) {
+  addStyle(wb, sheet, header_style, rows = 1, cols = 1:100, gridExpand = TRUE)
+  setColWidths(wb, sheet, cols = 1:20, widths = 18)
+}
+
+saveWorkbook(wb, "SV_Excel/Peach_SV_Analysis_Complete.xlsx", overwrite = TRUE)
+
+# Export CSV files
+write.csv(class_summary, "SV_Tables/Classification_Summary.csv", row.names = FALSE)
+write.csv(denovo_rates, "SV_Tables/DeNovo_Rates.csv", row.names = FALSE)
+write.csv(sv_data %>% group_by(CHR, origin_simple) %>% summarise(Count = n()), 
+          "SV_Tables/Chromosome_Summary.csv", row.names = FALSE)
+
+# ============================================================================
+# 13. FINAL REPORT
+# ============================================================================
+
+sink("SV_Tables/Analysis_Report.txt")
+
+cat("========================================\n")
+cat("PEACH SV ANALYSIS COMPLETE REPORT\n")
+cat("========================================\n\n")
+cat(paste("Analysis Date:", Sys.time(), "\n"))
+cat(paste("Total SVs Analyzed:", nrow(sv_data), "\n\n"))
+
+cat("========================================\n")
+cat("CLASSIFICATION SUMMARY\n")
+cat("========================================\n")
+print(class_summary)
+
+cat("\n========================================\n")
+cat("SIMPLIFIED ORIGIN SUMMARY\n")
+cat("========================================\n")
+print(simplified_summary)
+
+cat("\n========================================\n")
+cat("DE NOVO MUTATION RATES\n")
+cat("========================================\n")
+cat(paste("Callable genome size:", format(callable_genome_bp, big.mark = ","), "bp\n\n"))
+print(denovo_rates)
+
+cat("\n========================================\n")
+cat("OUTPUT FILES\n")
+cat("========================================\n")
+cat("Figures: SV_Figures/*.png, SV_Figures/*.pdf\n")
+cat("Excel: SV_Excel/Peach_SV_Analysis_Complete.xlsx\n")
+cat("CSV: SV_Tables/*.csv\n")
+
+sink()
+
+# ============================================================================
+# 14. COMPLETE
+# ============================================================================
+
+cat("\n========================================\n")
+cat("ANALYSIS COMPLETE!\n")
+cat("========================================\n")
+cat("\nOutput files saved to:\n")
+cat("  - SV_Figures/ (all figures)\n")
+cat("  - SV_Tables/ (CSV files)\n")
+cat("  - SV_Excel/ (Excel workbook)\n")
+
+# Print summary to console
+cat("\n=== QUICK SUMMARY ===\n")
+cat(sprintf("Total variants: %d\n", nrow(sv_data)))
+cat(sprintf("Ancestral (transmitted to G5): %d\n", 
+            sum(grepl("Ancestral.*Transmitted", sv_data$ORIGIN))))
+cat(sprintf("Introduced: %d\n", 
+            sum(grepl("Introduced", sv_data$ORIGIN))))
+cat(sprintf("De novo: %d\n", 
+            sum(grepl("De novo", sv_data$ORIGIN))))
+cat(sprintf("Inferred (F1): %d\n", 
+            sum(grepl("Inferred", sv_data$ORIGIN))))
