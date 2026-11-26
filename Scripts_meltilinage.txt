@@ -3,10 +3,10 @@
 # Author: Abebe Misganaw Gedamu
 # Pedigree-generation definition:
 #   G0: KHRLG and BT
-#   G1: SU
-#   G2: PDYPT and BJ25
+#   G1: F1
+#   G2: PDYPT
 #   G3: Z1_3
-#   G4: ZYP7, ZYP9 and MYQL
+#   G4: ZYP7, ZYP9 
 #   G5: ZYP27
 #
 #
